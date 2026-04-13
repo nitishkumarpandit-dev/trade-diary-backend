@@ -60,7 +60,7 @@ const TradeSchema = new Schema<ITrade>(
     },
     entryDate: { type: String, required: true },
     exitDate: { type: String },
-    entryTime: { type: String, required: true },
+    entryTime: { type: String },
     exitTime: { type: String },
     entryPrice: { type: Number, required: true },
     exitPrice: { type: Number },
