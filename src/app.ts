@@ -6,6 +6,8 @@ import { clerkMiddleware } from "@clerk/express";
 
 import { clerkWebhookHandler } from "./webhooks/clerk.webhook";
 
+import apiRoutes from "./routes";
+
 export function createApp(): Application {
   const app = express();
 
@@ -35,6 +37,9 @@ export function createApp(): Application {
     secretKey: process.env.CLERK_SECRET_KEY,
     publishableKey: process.env.CLERK_PUBLISHABLE_KEY
   }));
+
+  // ── API Routes ───────────────────────────────────────────────────────────────
+  app.use("/api", apiRoutes);
 
   // ── Health check ─────────────────────────────────────────────────────────────
   app.get("/health", (_req: Request, res: Response) => {
