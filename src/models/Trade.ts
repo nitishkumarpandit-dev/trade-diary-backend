@@ -8,7 +8,7 @@ export interface ITrade extends Document {
   duration: "INTRADAY" | "SWING";
   entryDate: string;
   exitDate?: string;
-  entryTime: string;
+  entryTime?: string;
   exitTime?: string;
   entryPrice: number;
   exitPrice?: number;
