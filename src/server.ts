@@ -1,7 +1,7 @@
 // src/server.ts
 
 import "dotenv/config";
-import { createApp } from "./app";
+import { createApp } from "./webhooks/app";
 import { connectDB } from "./config/database";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
