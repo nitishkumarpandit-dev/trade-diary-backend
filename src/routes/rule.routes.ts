@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "@clerk/express";
 import {
   getRules,
+  getRuleAnalytics,
   getRule,
   createRule,
   updateRule,
@@ -12,6 +13,7 @@ const router = Router();
 
 router.use(requireAuth());
 
+router.route("/analytics").get(getRuleAnalytics);
 router.route("/").get(getRules).post(createRule);
 
 router
