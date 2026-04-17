@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "@clerk/express";
 import {
   getMistakes,
+  getMistakeAnalytics,
   getMistake,
   createMistake,
   updateMistake,
@@ -12,6 +13,7 @@ const router = Router();
 
 router.use(requireAuth());
 
+router.route("/analytics").get(getMistakeAnalytics);
 router.route("/").get(getMistakes).post(createMistake);
 
 router
