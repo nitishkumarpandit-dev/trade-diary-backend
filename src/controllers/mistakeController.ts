@@ -9,7 +9,29 @@ const getUserId = (req: any): string => {
   return req.auth.userId;
 };
 
-// GET /api/mistakes/analytics
+function deriveSeverity(name: string): "HIGH" | "MEDIUM" | "LOW" {
+  const lower = name.toLowerCase();
+  if (
+    lower.includes("risk") ||
+    lower.includes("loss") ||
+    lower.includes("revenge")
+  )
+    return "HIGH";
+  if (
+    lower.includes("fomo") ||
+    lower.includes("over") ||
+    lower.includes("early")
+  )
+    return "MEDIUM";
+  return "LOW";
+}
+
+function deriveImpact(severity: "HIGH" | "MEDIUM" | "LOW"): "CRITICAL" | "MODERATE" | "GOOD" {
+  if (severity === "HIGH") return "CRITICAL";
+  if (severity === "MEDIUM") return "MODERATE";
+  return "GOOD";
+}
+
 export const getMistakeAnalytics = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
@@ -27,39 +49,49 @@ export const getMistakeAnalytics = async (req: Request, res: Response) => {
       filter.entryDate = { $gte: dateStr };
     }
     
-    const [trades, mistakes] = await Promise.all([
-      Trade.find(filter),
-      Mistake.find({ clerkId })
+    const stats = await Trade.aggregate([
+      { $match: filter },
+      {
+        $project: {
+          mistakes: 1,
+          entryDate: 1,
+          mistakesLen: { $size: "$mistakes" }
+        }
+      },
+      {
+        $facet: {
+           mistakeCounts: [
+             { $unwind: "$mistakes" },
+             { $group: { _id: "$mistakes", occurrences: { $sum: 1 } } }
+           ],
+           mistakesByDate: [
+             { $match: { mistakesLen: { $gt: 0 } } },
+             { $group: { _id: "$entryDate", count: { $sum: "$mistakesLen" } } }
+           ]
+        }
+      }
     ]);
     
-    const mistakeCounts: Record<string, number> = {};
-    mistakes.forEach(m => mistakeCounts[m._id.toString()] = 0);
+    const result = stats[0];
+    const mistakeCountsAgg = result.mistakeCounts;
+    const mistakesByDate = result.mistakesByDate;
     
     const heatmapData = Array.from({ length: 5 }, () => Array(7).fill(0));
     const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     
-    trades.forEach(trade => {
-       // Tally mistakes
-       trade.mistakes.forEach((mistakeId: any) => {
-         const id = mistakeId.toString();
-         if (mistakeCounts[id] !== undefined) mistakeCounts[id]++;
-       });
-       
-       // Calculate heatmap mapped to last 35 days
-       if (trade.mistakes.length > 0) {
-           const parts = trade.entryDate.split("-");
-           if (parts.length === 3) {
-               const d = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
-               const daysDiff = Math.floor((todayDate.getTime() - d.getTime()) / (1000 * 3600 * 24));
-               if (daysDiff >= 0 && daysDiff < 35) {
-                   const week = 4 - Math.floor(daysDiff / 7);
-                   const col = 6 - (daysDiff % 7);
-                   if (week >= 0 && week < 5 && col >= 0 && col < 7) {
-                       heatmapData[week][col] += trade.mistakes.length;
-                   }
-               }
-           }
-       }
+    mistakesByDate.forEach((d: any) => {
+        const parts = d._id.split("-");
+        if (parts.length === 3) {
+            const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
+            const daysDiff = Math.floor((todayDate.getTime() - dateObj.getTime()) / (1000 * 3600 * 24));
+            if (daysDiff >= 0 && daysDiff < 35) {
+                const week = 4 - Math.floor(daysDiff / 7);
+                const col = 6 - (daysDiff % 7);
+                if (week >= 0 && week < 5 && col >= 0 && col < 7) {
+                    heatmapData[week][col] += d.count;
+                }
+            }
+        }
     });
     
     // Normalize heatmap max to 4 intensity limit
@@ -68,6 +100,10 @@ export const getMistakeAnalytics = async (req: Request, res: Response) => {
            heatmapData[w][d] = Math.min(4, heatmapData[w][d]);
        }
     }
+    
+    const mistakes = await Mistake.find({ clerkId });
+    const mistakeCounts: Record<string, number> = {};
+    mistakeCountsAgg.forEach((m: any) => mistakeCounts[m._id.toString()] = m.occurrences);
     
     let totalMistakes = 0;
     const catCounts: Record<string, number> = {};
@@ -113,8 +149,30 @@ export const getMistakeAnalytics = async (req: Request, res: Response) => {
 export const getMistakes = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const mistakes = await Mistake.find({ clerkId }).sort({ createdAt: -1 });
-    res.json(mistakes);
+    const page = parseInt((req.query.page as string) || "1", 10);
+    const limit = parseInt((req.query.limit as string) || "20", 10);
+    const skip = (page - 1) * limit;
+
+    const mistakes = await Mistake.find({ clerkId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalCount = await Mistake.countDocuments({ clerkId });
+
+    const formatted = mistakes.map(m => {
+      const obj = m.toObject ? m.toObject() : m;
+      return { ...obj, id: obj._id.toString() };
+    });
+
+    res.json({
+      data: formatted,
+      pagination: {
+        total: totalCount,
+        page,
+        pages: Math.ceil(totalCount / limit),
+      },
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -138,7 +196,12 @@ export const getMistake = async (req: Request, res: Response) => {
 export const createMistake = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const mistake = new Mistake({ ...req.body, clerkId });
+    const body = { ...req.body };
+    if (body.name) {
+      body.severity = deriveSeverity(body.name);
+      body.impact = deriveImpact(body.severity);
+    }
+    const mistake = new Mistake({ ...body, clerkId });
     await mistake.save();
     res.status(201).json(mistake);
   } catch (error: any) {
@@ -150,9 +213,14 @@ export const createMistake = async (req: Request, res: Response) => {
 export const updateMistake = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
+    const updateData = { ...req.body };
+    if (updateData.name) {
+      updateData.severity = deriveSeverity(updateData.name);
+      updateData.impact = deriveImpact(updateData.severity);
+    }
     const mistake = await Mistake.findOneAndUpdate(
       { _id: req.params.id, clerkId },
-      req.body,
+      updateData,
       { new: true, runValidators: true }
     );
     if (!mistake) {

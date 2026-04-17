@@ -14,120 +14,31 @@ export const getStrategies = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
     
-    // Aggregation pipeline to join with trades and compute real-time performance stats
-    const strategies = await Strategy.aggregate([
-      { $match: { clerkId } },
-      {
-        $lookup: {
-          from: "trades", // Note: collection name is 'trades'
-          localField: "_id",
-          foreignField: "strategy",
-          as: "tradesList",
-        },
-      },
-      {
-        $addFields: {
-          computedTradesExecuted: { $size: "$tradesList" },
-          computedNetPnl: { $sum: "$tradesList.pnl" },
-          wins: {
-            $size: {
-              $filter: {
-                input: "$tradesList",
-                as: "trade",
-                cond: { $eq: ["$$trade.outcome", "PROFITABLE"] },
-              },
-            },
-          },
-          grossProfit: {
-            $sum: {
-              $map: {
-                input: {
-                  $filter: {
-                    input: "$tradesList",
-                    as: "trade",
-                    cond: { $gt: ["$$trade.pnl", 0] },
-                  },
-                },
-                as: "t",
-                in: "$$t.pnl",
-              },
-            },
-          },
-          grossLoss: {
-            $sum: {
-              $map: {
-                input: {
-                  $filter: {
-                    input: "$tradesList",
-                    as: "trade",
-                    cond: { $lt: ["$$trade.pnl", 0] },
-                  },
-                },
-                as: "t",
-                in: { $abs: "$$t.pnl" },
-              },
-            },
-          },
-        },
-      },
-      {
-        $addFields: {
-          computedWinRate: {
-            $cond: [
-              { $gt: ["$computedTradesExecuted", 0] },
-              { $multiply: [{ $divide: ["$wins", "$computedTradesExecuted"] }, 100] },
-              0,
-            ],
-          },
-          computedProfitFactor: {
-            $cond: [
-              { $eq: ["$grossLoss", 0] },
-              { $cond: [{ $gt: ["$grossProfit", 0] }, 100, 0] },
-              { $divide: ["$grossProfit", "$grossLoss"] },
-            ],
-          },
-        },
-      },
-      {
-        $project: {
-          tradesList: 0,
-          wins: 0,
-          grossProfit: 0,
-          grossLoss: 0,
-        },
-      },
-      { $sort: { createdAt: -1 } },
-    ]);
+    const page = parseInt((req.query.page as string) || "1", 10);
+    const limit = parseInt((req.query.limit as string) || "20", 10);
+    const skip = (page - 1) * limit;
 
-    // Map _id to id and assign computed stats to the main fields
-    const formatted = strategies.map((s) => ({
-      ...s,
-      id: s._id.toString(),
-      netPnl: s.computedNetPnl ?? s.netPnl,
-      tradesExecuted: s.computedTradesExecuted ?? s.tradesExecuted,
-      winRate: s.computedWinRate ?? s.winRate,
-      profitFactor: s.computedProfitFactor ?? s.profitFactor,
-    }));
+    const strategies = await Strategy.find({ clerkId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
-    res.json(formatted);
+    const totalCount = await Strategy.countDocuments({ clerkId });
 
-    // Save the computed aggregated fields back to the DB asynchronously
-    if (formatted.length > 0) {
-      const bulkOps = formatted.map((s) => ({
-        updateOne: {
-          filter: { _id: s._id },
-          update: {
-            $set: {
-              netPnl: s.netPnl,
-              tradesExecuted: s.tradesExecuted,
-              winRate: s.winRate,
-              profitFactor: s.profitFactor,
-            },
-          },
-        },
-      }));
-      Strategy.bulkWrite(bulkOps).catch((err) => console.error("Bulk write error:", err));
-    }
+    // Ensure frontend compatibility mapping _id to id
+    const formatted = strategies.map(s => {
+      const obj = s.toObject ? s.toObject() : s;
+      return { ...obj, id: obj._id.toString() };
+    });
+
+    res.json({
+      data: formatted,
+      pagination: {
+        total: totalCount,
+        page,
+        pages: Math.ceil(totalCount / limit),
+      },
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

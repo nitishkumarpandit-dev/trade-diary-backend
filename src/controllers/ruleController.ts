@@ -9,7 +9,6 @@ const getUserId = (req: any): string => {
   return req.auth.userId;
 };
 
-// GET /api/rules/analytics
 export const getRuleAnalytics = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
@@ -29,41 +28,61 @@ export const getRuleAnalytics = async (req: Request, res: Response) => {
       filter.entryDate = { $gte: dateStr };
     }
     
-    const [trades, rules] = await Promise.all([
-      Trade.find(filter),
-      Rule.find({ clerkId })
+    // Efficiently calculate all metrics using MongoDB aggregation
+    const stats = await Trade.aggregate([
+      { $match: filter },
+      {
+        $project: {
+           rules: 1,
+           mistakes: 1,
+           entryDate: 1,
+           rulesLen: { $size: "$rules" },
+           mistakesLen: { $size: "$mistakes" },
+        }
+      },
+      {
+        $addFields: {
+           bothLen: { $add: ["$rulesLen", "$mistakesLen"] },
+           parsedDate: { $dateFromString: { dateString: "$entryDate", format: "%Y-%m-%d", onError: null } }
+        }
+      },
+      {
+        $addFields: {
+           disciplineScore: {
+             $cond: [
+               { $gt: ["$bothLen", 0] },
+               { $multiply: [{ $divide: ["$rulesLen", "$bothLen"] }, 100] },
+               0
+             ]
+           },
+           dayOfWeek: { $dayOfWeek: "$parsedDate" }
+        }
+      },
+      {
+        $facet: {
+          total: [ { $count: "count" } ],
+          ruleCounts: [
+            { $unwind: "$rules" },
+            { $group: { _id: "$rules", adherenceCount: { $sum: 1 } } }
+          ],
+          disciplineByDay: [
+            { $match: { bothLen: { $gt: 0 } } },
+            { $group: { _id: "$dayOfWeek", sum: { $sum: "$disciplineScore" }, count: { $sum: 1 } } }
+          ]
+        }
+      }
     ]);
-    
+
+    const result = stats[0];
+    const totalTrades = result.total.length > 0 ? result.total[0].count : 0;
+    const ruleCountsAgg = result.ruleCounts;
+    const disciplineByDay = result.disciplineByDay;
+
+    const rules = await Rule.find({ clerkId });
+
     const ruleCounts: Record<string, number> = {};
-    const totalTrades = trades.length;
-    rules.forEach(r => ruleCounts[r._id.toString()] = 0);
-    
-    let dayDisciplineSum = [0, 0, 0, 0, 0, 0, 0];
-    let dayTradeCount = [0, 0, 0, 0, 0, 0, 0];
-    
-    trades.forEach(trade => {
-       trade.rules.forEach((ruleId: any) => {
-         const id = ruleId.toString();
-         if (ruleCounts[id] !== undefined) ruleCounts[id]++;
-       });
-       
-       const rulesLen = trade.rules.length;
-       const mistakesLen = trade.mistakes.length;
-       let disciplineScore = 0;
-       
-       if (rulesLen > 0 || mistakesLen > 0) {
-           disciplineScore = (rulesLen / (rulesLen + mistakesLen)) * 100;
-           
-           const parts = trade.entryDate.split("-");
-           if (parts.length === 3) {
-             const date = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
-             const day = date.getDay(); 
-             dayDisciplineSum[day] += disciplineScore;
-             dayTradeCount[day]++;
-           }
-       }
-    });
-    
+    ruleCountsAgg.forEach((r: any) => ruleCounts[r._id.toString()] = r.adherenceCount);
+
     const mappedRules = rules.map(r => ({
          id: r._id,
          name: r.name,
@@ -77,14 +96,15 @@ export const getRuleAnalytics = async (req: Request, res: Response) => {
     const leastUsed = [...mappedRules].sort((a, b) => a.adherenceCount - b.adherenceCount).slice(0, 3);
     
     const disciplineData = [0, 0, 0, 0, 0, 0, 0];
-    const jsDayToMockIndex = [6, 0, 1, 2, 3, 4, 5];
+    // MongoDB dayOfWeek: 1=Sun, 2=Mon... 7=Sat. Mock Index: Mon=0 ... Sun=6.
+    const getMockIndex = (mongoDay: number) => mongoDay === 1 ? 6 : mongoDay - 2;
     
-    for (let i=0; i<7; i++) {
-        if (dayTradeCount[i] > 0) {
-            disciplineData[jsDayToMockIndex[i]] = Math.round(dayDisciplineSum[i] / dayTradeCount[i]);
+    disciplineByDay.forEach((d: any) => {
+        if (d._id && d.count > 0) {
+            disciplineData[getMockIndex(d._id)] = Math.round(d.sum / d.count);
         }
-    }
-    
+    });
+
     res.json({
         topFollowed,
         leastUsed,
@@ -100,8 +120,30 @@ export const getRuleAnalytics = async (req: Request, res: Response) => {
 export const getRules = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const rules = await Rule.find({ clerkId }).sort({ createdAt: -1 });
-    res.json(rules);
+    const page = parseInt((req.query.page as string) || "1", 10);
+    const limit = parseInt((req.query.limit as string) || "20", 10);
+    const skip = (page - 1) * limit;
+
+    const rules = await Rule.find({ clerkId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalCount = await Rule.countDocuments({ clerkId });
+
+    const formatted = rules.map(r => {
+      const obj = r.toObject ? r.toObject() : r;
+      return { ...obj, id: obj._id.toString() };
+    });
+
+    res.json({
+      data: formatted,
+      pagination: {
+        total: totalCount,
+        page,
+        pages: Math.ceil(totalCount / limit),
+      },
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
