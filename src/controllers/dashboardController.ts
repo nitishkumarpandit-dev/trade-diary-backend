@@ -68,9 +68,18 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       Mistake.countDocuments({ clerkId })
     ]);
 
+    // Map DB outcomes → frontend OUTCOME_COLORS keys
+    const outcomeMap: Record<string, string> = {
+      "PROFITABLE": "FULL SUCCESS",
+      "BREAK_EVEN": "BREAK EVEN",
+      "LOSS": "MISTAKE",
+      "PENDING": "BREAK EVEN",
+    };
+
     const formatTrade = (t: any) => {
       const pnl = t.pnl || 0;
       const d = new Date(t.entryDate || t.createdAt);
+      const rawOutcome = t.outcome || "PENDING";
       return {
         id: t._id.toString(),
         date: d.toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" }).toUpperCase(),
@@ -78,13 +87,13 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
         symbol: t.symbol || "UNKNOWN",
         direction: t.direction || "LONG",
         pnl: pnl,
-        pnlPercent: t.pnlPercent || 0, // Fallback if no percent available natively
+        pnlPercent: t.pnlPercent || 0,
         entryPrice: t.entryPrice || 0,
         exitPrice: t.exitPrice || 0,
         strategy: t.strategy?.name || "Uncategorized",
         rrRatio: t.strategy?.rrRatio ? `1:${t.strategy.rrRatio}` : "1:2.0",
-        outcome: t.outcome || "BREAK EVEN",
-        market: "Crypto", // Mock fallback explicitly aligning history payload schema safely
+        outcome: outcomeMap[rawOutcome] || "BREAK EVEN",
+        market: t.marketType || "Crypto",
       };
     };
 
