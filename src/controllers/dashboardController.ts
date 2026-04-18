@@ -68,19 +68,23 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       Mistake.countDocuments({ clerkId })
     ]);
 
-    // Format trade helper
     const formatTrade = (t: any) => {
       const pnl = t.pnl || 0;
+      const d = new Date(t.entryDate || t.createdAt);
       return {
         id: t._id.toString(),
-        symbol: t.symbol,
-        tradeId: `#${Math.floor(1000 + Math.random() * 9000)}`,
-        date: t.entryDate,
-        pnl: pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`,
-        rr: t.strategy?.rrRatio ? `1:${t.strategy.rrRatio}` : "1:2.0",
-        type: t.direction,
-        status: t.outcome === "PROFITABLE" ? "WIN" : "LOSS",
-        rawPnl: pnl
+        date: d.toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" }).toUpperCase(),
+        time: d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        symbol: t.symbol || "UNKNOWN",
+        direction: t.direction || "LONG",
+        pnl: pnl,
+        pnlPercent: t.pnlPercent || 0, // Fallback if no percent available natively
+        entryPrice: t.entryPrice || 0,
+        exitPrice: t.exitPrice || 0,
+        strategy: t.strategy?.name || "Uncategorized",
+        rrRatio: t.strategy?.rrRatio ? `1:${t.strategy.rrRatio}` : "1:2.0",
+        outcome: t.outcome || "BREAK EVEN",
+        market: "Crypto", // Mock fallback explicitly aligning history payload schema safely
       };
     };
 
@@ -88,14 +92,14 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
     const topTradesRaw = await Trade.find({ ...matchQuery, outcome: { $ne: "PENDING" } })
       .sort({ pnl: -1 })
       .limit(3)
-      .populate("strategy", "rrRatio")
+      .populate("strategy", "name rrRatio")
       .lean();
 
     // 4. Recent Trades
     const recentTradesRaw = await Trade.find(matchQuery)
       .sort({ createdAt: -1 })
       .limit(5)
-      .populate("strategy", "rrRatio")
+      .populate("strategy", "name rrRatio")
       .lean();
 
     // 5. Common Mistakes
@@ -112,15 +116,17 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       severity: m.severity === 'HIGH' ? 'CRITICAL' : 'WARNING'
     }));
 
-    // 6. Cumulative Chart Analytics
+    // 6. Cumulative Chart & Strategy Analytics
     const allChartTradesRaw = await Trade.find({ ...matchQuery, outcome: { $ne: "PENDING" } })
       .sort({ entryDate: 1 })
+      .populate("strategy", "name")
       .lean();
 
     const buildChartData = (trades: any[]) => {
       const dailyMap = new Map<string, number>();
       const weeklyMap = new Map<string, number>();
       const monthlyMap = new Map<string, number>();
+      const strategyMap = new Map<string, number>();
 
       trades.forEach((t) => {
         const d = new Date(t.entryDate || t.createdAt);
@@ -141,6 +147,10 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
         // Monthly Key: YYYY-MM
         const monthKey = dayKey.substring(0, 7);
         monthlyMap.set(monthKey, (monthlyMap.get(monthKey) || 0) + pnl);
+        
+        // Strategy Key
+        const stratName = t.strategy?.name || "Uncategorized";
+        strategyMap.set(stratName, (strategyMap.get(stratName) || 0) + pnl);
       });
 
       const accumulate = (map: Map<string, number>) => {
@@ -153,14 +163,22 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
           });
       };
 
+      const strategyPnL = Array.from(strategyMap.entries()).map(([strategy, value]) => ({
+        strategy,
+        pnl: Number(value.toFixed(2))
+      }));
+
       return {
-        daily: accumulate(dailyMap),
-        weekly: accumulate(weeklyMap),
-        monthly: accumulate(monthlyMap)
+        chartData: {
+          daily: accumulate(dailyMap),
+          weekly: accumulate(weeklyMap),
+          monthly: accumulate(monthlyMap)
+        },
+        strategyPnL
       };
     };
 
-    const chartData = buildChartData(allChartTradesRaw);
+    const analyticsData = buildChartData(allChartTradesRaw);
 
     // Construct Payload
     const responseData = {
@@ -188,7 +206,8 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       },
       commonMistakes,
       tradeHistory: recentTradesRaw.map(formatTrade),
-      chartData
+      chartData: analyticsData.chartData,
+      strategyPnL: analyticsData.strategyPnL
     };
 
     res.status(200).json(responseData);
