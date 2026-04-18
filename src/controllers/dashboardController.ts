@@ -112,6 +112,56 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       severity: m.severity === 'HIGH' ? 'CRITICAL' : 'WARNING'
     }));
 
+    // 6. Cumulative Chart Analytics
+    const allChartTradesRaw = await Trade.find({ ...matchQuery, outcome: { $ne: "PENDING" } })
+      .sort({ entryDate: 1 })
+      .lean();
+
+    const buildChartData = (trades: any[]) => {
+      const dailyMap = new Map<string, number>();
+      const weeklyMap = new Map<string, number>();
+      const monthlyMap = new Map<string, number>();
+
+      trades.forEach((t) => {
+        const d = new Date(t.entryDate || t.createdAt);
+        const pnl = t.pnl || 0;
+
+        // Daily Key: YYYY-MM-DD
+        const dayKey = d.toISOString().split('T')[0];
+        dailyMap.set(dayKey, (dailyMap.get(dayKey) || 0) + pnl);
+
+        // Weekly Key: Start of Week (Monday)
+        const wd = new Date(d);
+        const day = wd.getDay();
+        const diff = wd.getDate() - day + (day === 0 ? -6 : 1);
+        const monday = new Date(wd.setDate(diff));
+        const weekKey = monday.toISOString().split('T')[0];
+        weeklyMap.set(weekKey, (weeklyMap.get(weekKey) || 0) + pnl);
+
+        // Monthly Key: YYYY-MM
+        const monthKey = dayKey.substring(0, 7);
+        monthlyMap.set(monthKey, (monthlyMap.get(monthKey) || 0) + pnl);
+      });
+
+      const accumulate = (map: Map<string, number>) => {
+        let runningTotal = 0;
+        return Array.from(map.entries())
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([date, val]) => {
+            runningTotal += val;
+            return { date, value: Number(runningTotal.toFixed(2)) };
+          });
+      };
+
+      return {
+        daily: accumulate(dailyMap),
+        weekly: accumulate(weeklyMap),
+        monthly: accumulate(monthlyMap)
+      };
+    };
+
+    const chartData = buildChartData(allChartTradesRaw);
+
     // Construct Payload
     const responseData = {
       stats: {
@@ -137,7 +187,8 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
         winRate: Math.round(winRate)
       },
       commonMistakes,
-      tradeHistory: recentTradesRaw.map(formatTrade)
+      tradeHistory: recentTradesRaw.map(formatTrade),
+      chartData
     };
 
     res.status(200).json(responseData);
