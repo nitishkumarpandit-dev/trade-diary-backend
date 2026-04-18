@@ -25,9 +25,6 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       let startDate = new Date();
       
       switch (range) {
-        case "Last 1 Day":
-          startDate.setDate(now.getDate() - 1);
-          break;
         case "Last 7 Days":
           startDate.setDate(now.getDate() - 7);
           break;
