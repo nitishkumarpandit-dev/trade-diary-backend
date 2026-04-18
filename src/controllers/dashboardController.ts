@@ -12,9 +12,44 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
       return;
     }
 
+    const { marketType, range } = req.query;
+
+    const matchQuery: any = { clerkId };
+
+    if (marketType && marketType !== "All") {
+      matchQuery.marketType = marketType;
+    }
+
+    if (range) {
+      const now = new Date();
+      let startDate = new Date();
+      
+      switch (range) {
+        case "Last 1 Day":
+          startDate.setDate(now.getDate() - 1);
+          break;
+        case "Last 7 Days":
+          startDate.setDate(now.getDate() - 7);
+          break;
+        case "Last 30 Days":
+          startDate.setDate(now.getDate() - 30);
+          break;
+        case "Last 1 Year":
+          startDate.setFullYear(now.getFullYear() - 1);
+          break;
+        default:
+          startDate = new Date(0); // All time
+      }
+      
+      // If we want all time, skip the createdAt filter unless it's strictly Last X Days
+      if (range !== "All Time" && range !== "All") {
+         matchQuery.createdAt = { $gte: startDate };
+      }
+    }
+
     // 1. Core Analytics via Aggregation
     const tradeStatsObj = await Trade.aggregate([
-      { $match: { clerkId, outcome: { $ne: "PENDING" } } },
+      { $match: { ...matchQuery, outcome: { $ne: "PENDING" } } },
       {
         $group: {
           _id: null,
@@ -53,14 +88,14 @@ export const getDashboardData = async (req: Request, res: Response): Promise<voi
     };
 
     // 3. Top Trades
-    const topTradesRaw = await Trade.find({ clerkId, outcome: { $ne: "PENDING" } })
+    const topTradesRaw = await Trade.find({ ...matchQuery, outcome: { $ne: "PENDING" } })
       .sort({ pnl: -1 })
       .limit(3)
       .populate("strategy", "rrRatio")
       .lean();
 
     // 4. Recent Trades
-    const recentTradesRaw = await Trade.find({ clerkId })
+    const recentTradesRaw = await Trade.find(matchQuery)
       .sort({ createdAt: -1 })
       .limit(5)
       .populate("strategy", "rrRatio")
