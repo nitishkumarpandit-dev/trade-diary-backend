@@ -4,11 +4,15 @@ import {
   getTemplates,
   getDailyChecklist,
   saveDailyChecklist,
+  getChecklistAnalysis,
 } from "../controllers/checklistController";
 
 const router = Router();
 
 router.use(requireAuth());
+
+// Analysis endpoint
+router.route("/analysis").get(getChecklistAnalysis);
 
 // Template endpoints
 router.route("/templates").get(getTemplates);

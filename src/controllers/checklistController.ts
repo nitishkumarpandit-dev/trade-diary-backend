@@ -196,3 +196,133 @@ export const saveDailyChecklist = async (req: Request, res: Response) => {
     res.status(400).json({ error: error.message });
   }
 };
+
+// ── GET /api/checklists/analysis ───────────────────────────────────────────────
+
+export const getChecklistAnalysis = async (req: Request, res: Response) => {
+  try {
+    const clerkId = getUserId(req);
+
+    // 1. Fetch all daily entries for this user
+    const dailyEntries = await DailyChecklist.find({ clerkId }).sort({ date: 1 });
+
+    if (dailyEntries.length === 0) {
+      return res.json({
+        stats: { streak: 0, avgCompletion: 0, bestDay: 0, totalLogged: 0 },
+        trend: { labels: [], data: [] },
+        weekday: [0, 0, 0, 0, 0],
+        insight: "Start your journey by checking off your first task today!",
+      });
+    }
+
+    // 2. Calculate Stats
+    let totalCompleted = 0;
+    let totalItems = 0;
+    let bestDayPercent = 0;
+    const totalLogged = dailyEntries.length;
+
+    dailyEntries.forEach((entry) => {
+      const dayTotal = entry.items.length;
+      const dayCompleted = entry.items.filter((i) => i.completed).length;
+      const dayPercent = dayTotal > 0 ? (dayCompleted / dayTotal) * 100 : 0;
+
+      totalCompleted += dayCompleted;
+      totalItems += dayTotal;
+      if (dayPercent > bestDayPercent) bestDayPercent = dayPercent;
+    });
+
+    const avgCompletion = totalItems > 0 ? (totalCompleted / totalItems) * 100 : 0;
+
+    // 3. Current Streak
+    let streak = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Map dates for easy lookup
+    const entryDates = new Set(dailyEntries.map((e) => e.date));
+
+    // Check if user has an entry today or yesterday to continue streak
+    let currentCheck = new Date(today);
+    const todayStr = currentCheck.toISOString().split("T")[0];
+    
+    // If no entry today, check if streak holds from yesterday
+    if (!entryDates.has(todayStr)) {
+      currentCheck.setDate(currentCheck.getDate() - 1);
+    }
+
+    while (entryDates.has(currentCheck.toISOString().split("T")[0])) {
+      streak++;
+      currentCheck.setDate(currentCheck.getDate() - 1);
+    }
+
+    // 4. Trend (Last 14 Days)
+    const trendLabels: string[] = [];
+    const trendData: number[] = [];
+    const now = new Date();
+
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dStr = d.toISOString().split("T")[0];
+      
+      const entry = dailyEntries.find((e) => e.date === dStr);
+      const label = i === 0 ? "Today" : `${d.getDate()}/${d.getMonth() + 1}`;
+      
+      trendLabels.push(label);
+      if (entry) {
+        const dayTotal = entry.items.length;
+        const dayCompleted = entry.items.filter((i) => i.completed).length;
+        trendData.push(dayTotal > 0 ? Math.round((dayCompleted / dayTotal) * 100) : 0);
+      } else {
+        trendData.push(0);
+      }
+    }
+
+    // 5. Weekday Performance (Average % for Mon-Fri)
+    const weekdaySums = [0, 0, 0, 0, 0]; // Mon, Tue, Wed, Thu, Fri
+    const weekdayCounts = [0, 0, 0, 0, 0];
+
+    dailyEntries.forEach((entry) => {
+      const date = new Date(entry.date);
+      const dayIndex = date.getDay(); // 0 (Sun) to 6 (Sat)
+      
+      if (dayIndex >= 1 && dayIndex <= 5) {
+        const arrIdx = dayIndex - 1;
+        const dayTotal = entry.items.length;
+        const dayCompleted = entry.items.filter((i) => i.completed).length;
+        
+        weekdaySums[arrIdx] += dayTotal > 0 ? (dayCompleted / dayTotal) * 100 : 0;
+        weekdayCounts[arrIdx]++;
+      }
+    });
+
+    const weekdayAverages = weekdaySums.map((sum, i) => 
+      weekdayCounts[i] > 0 ? Math.round(sum / weekdayCounts[i]) : 0
+    );
+
+    // 6. Insight Message
+    const bestWeekdayIdx = weekdayAverages.indexOf(Math.max(...weekdayAverages));
+    const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    const insight = streak > 5 
+      ? `Impressive ${streak}-day streak! You are most disciplined on ${weekdays[bestWeekdayIdx]}.`
+      : `Complete your checklist today to build your streak! Your ${weekdays[bestWeekdayIdx]} performance is leading.`;
+
+    res.json({
+      stats: {
+        streak,
+        avgCompletion: Math.round(avgCompletion),
+        bestDay: Math.round(bestDayPercent),
+        totalLogged,
+      },
+      trend: {
+        labels: trendLabels,
+        data: trendData,
+      },
+      weekday: weekdayAverages,
+      insight,
+    });
+
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
