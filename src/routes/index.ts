@@ -3,8 +3,8 @@ import strategyRoutes from "./strategy.routes";
 import ruleRoutes from "./rule.routes";
 import mistakeRoutes from "./mistake.routes";
 import tradeRoutes from "./trade.routes";
-
 import dashboardRoutes from "./dashboard.routes";
+import checklistRoutes from "./checklist.routes";
 
 const router = Router();
 
@@ -13,5 +13,6 @@ router.use("/rules", ruleRoutes);
 router.use("/mistakes", mistakeRoutes);
 router.use("/trades", tradeRoutes);
 router.use("/dashboard", dashboardRoutes);
+router.use("/checklists", checklistRoutes);
 
 export default router;
