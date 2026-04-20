@@ -1,7 +1,7 @@
 import axios from "axios";
 import crypto from "crypto";
 
-const DELTA_BASE_URL = "https://api.delta.exchange";
+const DELTA_BASE_URL = "https://api.india.delta.exchange";
 
 export class DeltaService {
   /**
