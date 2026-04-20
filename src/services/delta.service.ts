@@ -68,15 +68,27 @@ export class DeltaService {
 
         // Handle specific IP whitelist errors
         if (status === 403 || status === 401) {
-          const deltaMsg = data?.message || data?.error || "";
+          // Robust message extraction (handles strings and objects)
+          let deltaMsg = "";
+          if (typeof data?.message === "string") {
+            deltaMsg = data.message;
+          } else if (typeof data?.error === "string") {
+            deltaMsg = data.error;
+          } else if (data?.error?.code && typeof data.error.code === "string") {
+            deltaMsg = data.error.code;
+          }
+
           if (
             deltaMsg.toLowerCase().includes("whitelist") ||
             deltaMsg.toLowerCase().includes("ip") ||
             deltaMsg.toLowerCase().includes("access denied")
           ) {
             errorMessage = `Delta Exchange Error: ${deltaMsg}. Please ensure your server IP is whitelisted in Delta API settings.`;
-          } else if (data?.error === "invalid_api_key_or_signature") {
-            errorMessage = "Invalid API Key or Secret. Please double-check your credentials.";
+          } else if (
+            deltaMsg === "invalid_api_key_or_signature" ||
+            deltaMsg === "invalid_api_key"
+          ) {
+            errorMessage = "Invalid API Key or Secret. Please double-check your credentials in Delta settings.";
           }
         }
       } else {
