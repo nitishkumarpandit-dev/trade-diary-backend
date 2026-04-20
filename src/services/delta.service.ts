@@ -40,6 +40,7 @@ export class DeltaService {
           "signature": signature,
           "timestamp": timestamp,
           "Content-Type": "application/json",
+          "User-Agent": "TradeDiary/1.0", // Mandatory for Delta Exchange
         },
       });
 
@@ -47,9 +48,14 @@ export class DeltaService {
       return response.status === 200;
     } catch (error: any) {
       if (error.response) {
-        console.error("Delta API Error:", error.response.status, error.response.data);
+        // Log the full response data - this often contains the detected IP if whitelisting fails
+        console.error("❌ Delta API Error (Verification):", {
+          status: error.response.status,
+          data: error.response.data,
+          headers: error.response.headers,
+        });
       } else {
-        console.error("Delta Verification Error:", error.message);
+        console.error("❌ Delta Verification Network Error:", error.message);
       }
       return false;
     }
@@ -77,6 +83,7 @@ export class DeltaService {
           "signature": signature,
           "timestamp": timestamp,
           "Content-Type": "application/json",
+          "User-Agent": "TradeDiary/1.0",
         },
       });
 
@@ -138,7 +145,10 @@ export class DeltaService {
       });
     } catch (error: any) {
       if (error.response) {
-        console.error("Delta API Error (Fills):", error.response.status, error.response.data);
+        console.error("❌ Delta API Error (Fills):", {
+          status: error.response.status,
+          data: error.response.data,
+        });
         throw new Error(error.response.data?.error || "Failed to fetch trades from Delta Exchange");
       }
       throw error;
