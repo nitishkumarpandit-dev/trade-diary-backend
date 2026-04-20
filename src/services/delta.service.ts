@@ -105,16 +105,17 @@ export class DeltaService {
    */
   static async getFillsAndMapToTrades(apiKey: string, apiSecret: string, clerkId: string) {
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const startTime = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+    // Delta expects start_time in microseconds (16 digits)
+    const startTimeMicro = (Date.now() - 7 * 24 * 60 * 60 * 1000) * 1000;
     
     // 1. Fetch Fills (Executions)
     const fillsPath = "/v2/fills";
-    const fillsQuery = `?start_time=${startTime}&page_size=100`;
+    const fillsQuery = `?start_time=${startTimeMicro}&page_size=100`;
     const fillsSig = this.generateSignature("GET", timestamp, fillsPath, fillsQuery, "", apiSecret);
 
     // 2. Fetch Orders (for Metadata like SL/TP/Leverage)
     const ordersPath = "/v2/orders";
-    const ordersQuery = `?start_time=${startTime}&page_size=100`;
+    const ordersQuery = `?start_time=${startTimeMicro}&page_size=100`;
     const ordersSig = this.generateSignature("GET", timestamp, ordersPath, ordersQuery, "", apiSecret);
 
     try {

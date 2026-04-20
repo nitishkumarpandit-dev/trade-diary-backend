@@ -135,7 +135,11 @@ export const syncTrades = async (req: Request, res: Response) => {
     const syncedTradesData = await DeltaService.getFillsAndMapToTrades(apiKey, apiSecret, clerkId);
 
     if (syncedTradesData.length === 0) {
-      return res.json({ success: true, message: "No new trades found in the last 30 days", count: 0 });
+      return res.json({ 
+        success: true, 
+        message: "No trades found on Delta Exchange for the last 7 days.", 
+        count: 0 
+      });
     }
 
     // 3. Filter out trades that already exist in our DB (Skip duplicates)
@@ -149,14 +153,20 @@ export const syncTrades = async (req: Request, res: Response) => {
     const existingIds = new Set(existingTrades.map(t => t.externalOrderId));
     const newTradesToInsert = syncedTradesData.filter((t: any) => !existingIds.has(t.externalOrderId));
 
-    if (newTradesToInsert.length > 0) {
-      // 4. Save new trades
-      await Trade.insertMany(newTradesToInsert);
+    if (newTradesToInsert.length === 0) {
+      return res.json({
+        success: true,
+        message: "Your journal is already up-to-date. No new trades were found for today.",
+        count: 0
+      });
     }
+
+    // 4. Save new trades
+    await Trade.insertMany(newTradesToInsert);
 
     res.json({
       success: true,
-      message: `Synchronized ${newTradesToInsert.length} new trades (grouped by Order ID)`,
+      message: `Successfully synchronized ${newTradesToInsert.length} new trade(s) from Delta Exchange.`,
       count: newTradesToInsert.length
     });
   } catch (error: any) {
