@@ -31,7 +31,7 @@ export class DeltaService {
     apiSecret: string,
   ): Promise<{ isValid: boolean; error?: string }> {
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const path = "/api/v2/wallet/balances";
+    const path = "/v2/wallet/balances";
     const method = "GET";
 
     const signature = this.generateSignature(
@@ -94,9 +94,9 @@ export class DeltaService {
    */
   static async getFillsAndMapToTrades(apiKey: string, apiSecret: string, clerkId: string) {
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const path = "/api/v2/fills";
+    const path = "/v2/fills";
     const method = "GET";
-    
+
     // We want fills from the last 30 days
     const startTime = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
     const query = `?start_time=${startTime}&page_size=100`;
@@ -119,7 +119,7 @@ export class DeltaService {
       }
 
       const fills = response.data.result || [];
-      
+
       // Grouping fills by order_id to treat multiple executions of the same order as one trade
       const groupedOrders: Record<string, any> = {};
 
@@ -138,7 +138,7 @@ export class DeltaService {
 
         const size = parseFloat(fill.size);
         const price = parseFloat(fill.price);
-        
+
         groupedOrders[orderId].totalSize += size;
         groupedOrders[orderId].totalCost += size * price;
         // Use the earliest fill time as the entry time
