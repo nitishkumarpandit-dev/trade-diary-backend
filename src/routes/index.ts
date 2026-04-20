@@ -6,6 +6,7 @@ import tradeRoutes from "./trade.routes";
 import dashboardRoutes from "./dashboard.routes";
 import checklistRoutes from "./checklist.routes";
 import systemRoutes from "./system.routes";
+import brokerRoutes from "./broker.routes";
 
 const router = Router();
 
@@ -16,5 +17,6 @@ router.use("/trades", tradeRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/checklists", checklistRoutes);
 router.use("/system", systemRoutes);
+router.use("/broker", brokerRoutes);
 
 export default router;

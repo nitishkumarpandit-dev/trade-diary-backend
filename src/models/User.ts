@@ -19,6 +19,15 @@ export interface IUser extends Document {
   // Auth providers used
   authProviders: string[]; // e.g. ["email", "google"]
 
+  // Broker connection
+  brokerConnection?: {
+    brokerId: string; // e.g. "delta"
+    apiKey: string;
+    apiSecretEncrypted: string;
+    isConnected: boolean;
+    lastVerifiedAt: Date | null;
+  };
+
   // Timestamps
   clerkCreatedAt: Date;
   clerkUpdatedAt: Date;
@@ -61,6 +70,15 @@ const UserSchema = new Schema<IUser>(
     authProviders: {
       type: [String],
       default: [],
+    },
+
+    // Broker connection
+    brokerConnection: {
+      brokerId: { type: String, default: null },
+      apiKey: { type: String, default: null },
+      apiSecretEncrypted: { type: String, default: null },
+      isConnected: { type: Boolean, default: false },
+      lastVerifiedAt: { type: Date, default: null },
     },
 
     // Clerk timestamps

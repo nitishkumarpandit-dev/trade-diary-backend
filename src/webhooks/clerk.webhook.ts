@@ -6,6 +6,12 @@
 import { Request, Response } from "express";
 import { Webhook } from "svix";
 import { User } from "../models/User";
+import { Trade } from "../models/Trade";
+import { Strategy } from "../models/Strategy";
+import { Rule } from "../models/Rule";
+import { Mistake } from "../models/Mistake";
+import { DailyChecklist } from "../models/DailyChecklist";
+import { ChecklistTemplate } from "../models/ChecklistTemplate";
 
 // ── Clerk webhook event types ──────────────────────────────────────────────────
 interface ClerkEmailAddress {
@@ -215,11 +221,46 @@ async function handleUserUpdated(data: ClerkUserPayload): Promise<void> {
 }
 
 async function handleUserDeleted(data: { id: string }): Promise<void> {
-  const deleted = await User.findOneAndDelete({ clerkId: data.id });
+  const clerkId = data.id;
+  console.log(`🗑️  Starting cascading deletion for user: ${clerkId}`);
 
-  if (deleted) {
-    console.log(`✅ User deleted from MongoDB: ${deleted.email} (${data.id})`);
-  } else {
-    console.warn(`⚠️  user.deleted: No user found for clerkId ${data.id}`);
+  try {
+    // Delete all associated data in parallel
+    const results = await Promise.allSettled([
+      User.findOneAndDelete({ clerkId }),
+      Trade.deleteMany({ clerkId }),
+      Strategy.deleteMany({ clerkId }),
+      Rule.deleteMany({ clerkId }),
+      Mistake.deleteMany({ clerkId }),
+      DailyChecklist.deleteMany({ clerkId }),
+      ChecklistTemplate.deleteMany({ clerkId }),
+    ]);
+
+    // Log results for debugging
+    const labels = [
+      "User",
+      "Trades",
+      "Strategies",
+      "Rules",
+      "Mistakes",
+      "DailyChecklist",
+      "ChecklistTemplate",
+    ];
+
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        console.log(`✅ ${labels[index]} deletion processed.`);
+      } else {
+        console.error(
+          `❌ ${labels[index]} deletion failed:`,
+          result.reason.message || result.reason,
+        );
+      }
+    });
+
+    console.log(`✅ Finished cascading deletion for clerkId: ${clerkId}`);
+  } catch (error) {
+    console.error(`❌ Unexpected error during handleUserDeleted:`, error);
+    throw error;
   }
 }

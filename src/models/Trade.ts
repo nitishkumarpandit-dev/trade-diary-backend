@@ -27,6 +27,8 @@ export interface ITrade extends Document {
   strategy: mongoose.Types.ObjectId;
   rules: mongoose.Types.ObjectId[];
   mistakes: mongoose.Types.ObjectId[];
+  externalOrderId?: string;
+  externalBroker?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -96,6 +98,14 @@ const TradeSchema = new Schema<ITrade>(
         ref: "Mistake",
       },
     ],
+    externalOrderId: {
+      type: String,
+      sparse: true,
+      index: true,
+    },
+    externalBroker: {
+      type: String,
+    },
   },
   {
     timestamps: true,
@@ -106,6 +116,7 @@ const TradeSchema = new Schema<ITrade>(
 // Indexes mapping to common queries
 TradeSchema.index({ clerkId: 1, marketType: 1 });
 TradeSchema.index({ clerkId: 1, createdAt: -1 });
+TradeSchema.index({ externalOrderId: 1, clerkId: 1 }, { unique: true, sparse: true });
 
 export const Trade: Model<ITrade> =
   mongoose.models.Trade || mongoose.model<ITrade>("Trade", TradeSchema);
