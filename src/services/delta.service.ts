@@ -26,38 +26,65 @@ export class DeltaService {
   /**
    * Verifies the provided API credentials by attempting to fetch wallet balances.
    */
-  static async verifyCredentials(apiKey: string, apiSecret: string): Promise<boolean> {
+  static async verifyCredentials(
+    apiKey: string,
+    apiSecret: string,
+  ): Promise<{ isValid: boolean; error?: string }> {
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const path = "/api/v2/wallet/balances";
     const method = "GET";
 
-    const signature = this.generateSignature(method, timestamp, path, "", "", apiSecret);
+    const signature = this.generateSignature(
+      method,
+      timestamp,
+      path,
+      "",
+      "",
+      apiSecret,
+    );
 
     try {
       const response = await axios.get(`${DELTA_BASE_URL}${path}`, {
         headers: {
           "api-key": apiKey,
-          "signature": signature,
-          "timestamp": timestamp,
+          signature: signature,
+          timestamp: timestamp,
           "Content-Type": "application/json",
           "User-Agent": "TradeDiary/1.0", // Mandatory for Delta Exchange
         },
       });
 
       // If we get an OK response, the credentials are valid
-      return response.status === 200;
+      return { isValid: response.status === 200 };
     } catch (error: any) {
+      let errorMessage = "Verification failed. Please check your API Key/Secret.";
+
       if (error.response) {
-        // Log the full response data - this often contains the detected IP if whitelisting fails
-        console.error("❌ Delta API Error (Verification):", {
-          status: error.response.status,
-          data: error.response.data,
-          headers: error.response.headers,
-        });
+        const status = error.response.status;
+        const data = error.response.data;
+
+        // Log for server-side debugging
+        console.error("❌ Delta API Error (Verification) Full Error:", JSON.stringify(error.response.data, null, 2));
+
+        // Handle specific IP whitelist errors
+        if (status === 403 || status === 401) {
+          const deltaMsg = data?.message || data?.error || "";
+          if (
+            deltaMsg.toLowerCase().includes("whitelist") ||
+            deltaMsg.toLowerCase().includes("ip") ||
+            deltaMsg.toLowerCase().includes("access denied")
+          ) {
+            errorMessage = `Delta Exchange Error: ${deltaMsg}. Please ensure your server IP is whitelisted in Delta API settings.`;
+          } else if (data?.error === "invalid_api_key_or_signature") {
+            errorMessage = "Invalid API Key or Secret. Please double-check your credentials.";
+          }
+        }
       } else {
         console.error("❌ Delta Verification Network Error:", error.message);
+        errorMessage = "Network error while connecting to Delta Exchange. Please try again.";
       }
-      return false;
+
+      return { isValid: false, error: errorMessage };
     }
   }
 
@@ -145,10 +172,7 @@ export class DeltaService {
       });
     } catch (error: any) {
       if (error.response) {
-        console.error("❌ Delta API Error (Fills):", {
-          status: error.response.status,
-          data: error.response.data,
-        });
+        console.error("❌ Delta API Error (Fills) Full Error:", JSON.stringify(error.response.data, null, 2));
         throw new Error(error.response.data?.error || "Failed to fetch trades from Delta Exchange");
       }
       throw error;

@@ -27,10 +27,10 @@ export const connectDelta = async (req: Request, res: Response) => {
     }
 
     // 1. Verify credentials with Delta Exchange
-    const isValid = await DeltaService.verifyCredentials(apiKey, apiSecret);
+    const { isValid, error } = await DeltaService.verifyCredentials(apiKey, apiSecret);
     if (!isValid) {
       return res.status(401).json({ 
-        error: "Verification failed. Please check your API Key/Secret and ensure your IP is whitelisted on Delta Exchange." 
+        error: error || "Verification failed. Please check your API Key/Secret and ensure your IP is whitelisted on Delta Exchange." 
       });
     }
 
