@@ -14,10 +14,14 @@ export interface ITrade extends Document {
   exitPrice?: number;
   quantity: number;
   leverage: number;
-  stopLoss: number;
-  target: number;
+  stopLoss: number | null;
+  target: number | null;
   outcome: "PROFITABLE" | "BREAK_EVEN" | "LOSS" | "PENDING";
   pnl: number;
+  pnlPercent: number;
+  totalAmount: number;
+  charges: number;
+  margin: number;
   rrRatio: number;
   confidence: number;
   satisfaction: number;

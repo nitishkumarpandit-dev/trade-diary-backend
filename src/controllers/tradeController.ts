@@ -75,7 +75,12 @@ export const getTrades = async (req: Request, res: Response) => {
     const filter: any = { clerkId };
 
     if (req.query.marketType && req.query.marketType !== "All") {
-      filter.marketType = req.query.marketType;
+      if (req.query.marketType === "Crypto") {
+        // Delta Sync uses descriptive sub-types; ensure they are caught in the global 'Crypto' bucket
+        filter.marketType = { $in: ["Crypto", "Perpetual Futures", "Futures", "Call Option", "Put Option", "Move Option"] };
+      } else {
+        filter.marketType = req.query.marketType;
+      }
     }
 
     if (req.query.direction && req.query.direction !== "Both") {
@@ -127,12 +132,18 @@ export const getTrades = async (req: Request, res: Response) => {
     const formattedTrades = rawTrades.map(trade => {
       const t = trade.toObject ? trade.toObject() : trade;
 
-      const ePrice = Number(t.entryPrice) || 0;
-      const qty = Number(t.quantity) || 0;
-      const margin = ePrice * qty;
+      // Prioritize stored metrics from broker sync, fallback to manual entry behavior
+      const entryPrice = Number(t.entryPrice) || 0;
+      const quantity = Number(t.quantity) || 0;
+      
+      const margin = (t.margin != null && t.margin !== 0) 
+        ? t.margin 
+        : (entryPrice * quantity);
 
-      // Guard divide by 0
-      const pnlPct = margin > 0 ? (t.pnl / margin) * 100 : 0;
+      // Preferred: actual broker-calculated ROI. Fallback: manual estimate.
+      const pnlPercent = (t.pnlPercent != null && t.pnlPercent !== 0)
+        ? t.pnlPercent
+        : (margin > 0 ? (t.pnl / margin) * 100 : 0);
 
       let mappedOutcome = "BREAK EVEN";
       if (t.outcome === "PROFITABLE") mappedOutcome = "FULL SUCCESS";
@@ -152,7 +163,9 @@ export const getTrades = async (req: Request, res: Response) => {
         date: formattedDate,
         time: t.entryTime || "00:00",
         market: t.marketType,
-        pnlPercent: pnlPct,
+        pnlPercent: pnlPercent,
+        margin: margin,
+        charges: t.charges || 0,
         strategy: (t.strategy as any)?.name || "None",
         outcome: mappedOutcome,
         rrRatio: t.rrRatio || "1:1"

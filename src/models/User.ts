@@ -26,6 +26,7 @@ export interface IUser extends Document {
     apiSecretEncrypted: string;
     isConnected: boolean;
     lastVerifiedAt: Date | null;
+    lastSyncedAt: Date | null;
   };
 
   // Timestamps
@@ -79,6 +80,7 @@ const UserSchema = new Schema<IUser>(
       apiSecretEncrypted: { type: String, default: null },
       isConnected: { type: Boolean, default: false },
       lastVerifiedAt: { type: Date, default: null },
+      lastSyncedAt: { type: Date, default: null },
     },
 
     // Clerk timestamps
