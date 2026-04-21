@@ -132,7 +132,7 @@ export const syncTrades = async (req: Request, res: Response) => {
     const { apiKey } = user.brokerConnection;
 
     // 2. Fetch and map trades from Delta
-    const syncedTradesData = await DeltaService.syncTrades(apiKey, apiSecret, clerkId);
+    const syncedTradesData = await DeltaService.getFillsAndMapToTrades(apiKey, apiSecret, clerkId);
 
     if (syncedTradesData.length === 0) {
       return res.json({ 
