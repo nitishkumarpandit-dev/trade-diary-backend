@@ -1,260 +1,594 @@
-import axios from "axios";
+import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
 const DELTA_BASE_URL = "https://api.india.delta.exchange";
+const USER_AGENT = "TradeDiary/3.0";
+const SYNC_DAYS = 7;
+const PAGE_SIZE = 100; // max Delta allows
+
+// IST offset in ms (UTC+5:30)
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Raw API types  (exactly what Delta returns)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DeltaFill {
+  id: number;
+  order_id: number;
+  product_id: number;
+  product_symbol: string;
+  side: "buy" | "sell";
+  size: string;       // contracts, number-as-string
+  fill_price: string;       // number-as-string
+  commission: string;       // always positive, number-as-string
+  created_at: string;       // microsecond-epoch string e.g. "1713700123456789"
+  meta_data?: {
+    closed_pnl?: string; // realized PnL for this fill
+    order_margin_blocked?: string; // margin locked at order placement
+    order_size?: number;
+    order_price?: string;
+  };
+  product?: {
+    contract_type?: string;  // "perpetual_futures"|"futures"|"call_options"|"put_options"
+    contract_value?: string;  // per-contract notional
+    default_leverage?: string;
+  };
+}
+
+interface DeltaOrder {
+  id: number;
+  product_id: number;
+  product_symbol: string;
+  side: "buy" | "sell";
+  stop_price?: string;   // SL trigger price
+  stop_order_type?: string;   // "stop_loss_order" when present
+  bracket_take_profit_price?: string;   // TP trigger price
+  bracket_stop_loss_price?: string;   // bracket SL (alternative field)
+  leverage?: number | string;
+  state: string;
+  created_at: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One open leg waiting to be matched with its exit.
+ * Represents a single fill that opened (or partially opened) a position.
+ */
+interface OpenLeg {
+  fillId: number;
+  orderId: number;
+  price: number;
+  remainingQty: number;   // contracts still unmatched
+  timeMs: number;   // entry timestamp in ms (pre-computed once)
+  commissionPerUnit: number;   // commission / size for this fill
+  direction: "LONG" | "SHORT";
+  contractType: string;
+  leverage: number;
+  stopLoss: number | null;
+  target: number | null;
+  margin: number;   // margin_blocked at this fill's order
+}
+
+/** Final trade written to MongoDB */
+export interface ParsedTrade {
+  clerkId: string;
+
+  // Identity
+  symbol: string;
+  marketType: string;
+  direction: "LONG" | "SHORT";
+
+  // Duration
+  duration: "INTRADAY" | "SWING";
+
+  // Dates & Times (IST)
+  entryDate: string;   // "YYYY-MM-DD"
+  exitDate: string;   // "YYYY-MM-DD"
+  entryTime: string;   // "HH:MM:SS"
+  exitTime: string;   // "HH:MM:SS"
+
+  // Prices
+  entryPrice: number;
+  exitPrice: number;
+  quantity: number;  // contracts matched
+
+  // Financials
+  totalAmount: number;   // entryPrice × quantity (notional at entry)
+  pnl: number;   // realized P&L
+  pnlPercent: number;   // (pnl / totalAmount) × 100
+  charges: number;   // total commission (entry + exit side)
+  margin: number;   // margin blocked at entry
+  leverage: number;
+
+  // Risk
+  stopLoss: number | null;
+  target: number | null;
+
+  // Meta
+  outcome: "PROFITABLE" | "LOSS" | "BREAK_EVEN";
+  externalOrderId: string;
+  externalBroker: "delta";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Converts any Delta timestamp to milliseconds — called once per fill,
+ * result cached so sort never re-parses.
+ *
+ * /v2/fills      → microsecond epoch string (16 digits)
+ * /v2/orders     → ISO 8601 string
+ */
+function toMs(ts: unknown): number {
+  if (!ts) return Date.now();
+  const s = String(ts).trim();
+
+  if (s.includes("T") || (s.includes("-") && s.length < 20)) {
+    const p = Date.parse(s);
+    return isNaN(p) ? Date.now() : p;
+  }
+
+  const n = Number(s);
+  if (isNaN(n)) return Date.now();
+  if (n > 1e15) return Math.round(n / 1000); // microseconds → ms
+  if (n < 1e12) return n * 1000;             // seconds → ms
+  return n;
+}
+
+/**
+ * Fast IST date string "YYYY-MM-DD" without Intl overhead.
+ * Adds IST offset then reads UTC getters (no locale engine).
+ */
+function istDateStr(ms: number): string {
+  const d = new Date(ms + IST_OFFSET_MS);
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${mo}-${day}`;
+}
+
+/**
+ * Fast IST time string "HH:MM:SS" without Intl overhead.
+ */
+function istTimeStr(ms: number): string {
+  const d = new Date(ms + IST_OFFSET_MS);
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  const s = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${h}:${mi}:${s}`;
+}
+
+function toMarketType(contractType = ""): string {
+  const MAP: Record<string, string> = {
+    perpetual_futures: "Perpetual Futures",
+    futures: "Futures",
+    call_options: "Call Option",
+    put_options: "Put Option",
+    move_options: "Move Option",
+    interest_rate_swaps: "Interest Rate Swap",
+  };
+  return MAP[contractType] ?? (contractType || "Perpetual Futures");
+}
+
+function safeFloat(v: string | number | undefined | null, fallback = 0): number {
+  if (v == null || v === "") return fallback;
+  const n = parseFloat(String(v));
+  return isNaN(n) ? fallback : n;
+}
+
+/** Round to 8 decimal places — avoids floating-point noise in stored values */
+function round8(n: number): number {
+  return Math.round(n * 1e8) / 1e8;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP client — singleton Axios instance with keep-alive + timeout
+// ─────────────────────────────────────────────────────────────────────────────
+
+const http: AxiosInstance = axios.create({
+  baseURL: DELTA_BASE_URL,
+  timeout: 15_000,
+  headers: { "User-Agent": USER_AGENT, "Content-Type": "application/json" },
+});
+
+function sign(
+  method: string,
+  ts: string,
+  path: string,
+  query: string,
+  body: string,
+  secret: string
+): string {
+  const pre = method.toUpperCase() + ts + path + query + body;
+  return crypto.createHmac("sha256", secret).update(pre).digest("hex");
+}
+
+/** Builds signed auth headers. `query` must include the leading "?". */
+function authHeaders(
+  apiKey: string,
+  secret: string,
+  method: string,
+  path: string,
+  query = "",
+  body = ""
+): Record<string, string> {
+  const ts = Math.floor(Date.now() / 1000).toString();
+  return {
+    "api-key": apiKey,
+    signature: sign(method, ts, path, query, body, secret),
+    timestamp: ts,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic paginator — works for any Delta endpoint with meta.after cursor
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchAllPages<T>(
+  apiKey: string,
+  secret: string,
+  path: string,
+  baseParams: Record<string, string>
+): Promise<T[]> {
+  const results: T[] = [];
+  let after: string | null = null;
+
+  do {
+    const params: Record<string, string> = {
+      ...baseParams,
+      page_size: String(PAGE_SIZE),
+    };
+    if (after) params.after = after;
+
+    // Query string built once — reused in both URL and signature
+    const query = "?" + new URLSearchParams(params).toString();
+    const headers = authHeaders(apiKey, secret, "GET", path, query);
+
+    const res = await http.get<{
+      success: boolean;
+      result: T[];
+      meta?: { after?: string | null };
+    }>(path + query, { headers });
+
+    if (!res.data?.success) {
+      throw new Error(`Delta API ${path} error: ${JSON.stringify(res.data)}`);
+    }
+
+    const page = res.data.result ?? [];
+    results.push(...page);
+    after = res.data.meta?.after ?? null;
+
+    if (page.length < PAGE_SIZE) break; // last page
+  } while (after);
+
+  return results;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeltaService
+// ─────────────────────────────────────────────────────────────────────────────
 
 export class DeltaService {
-  /**
-   * Generates a signature for Delta Exchange API requests.
-   * Format: METHOD + TIMESTAMP + PATH + QUERY + BODY
-   */
-  private static generateSignature(
-    method: string,
-    timestamp: string,
-    path: string,
-    query: string = "",
-    body: string = "",
-    apiSecret: string
-  ): string {
-    const signatureString = method.toUpperCase() + timestamp + path + query + body;
-    return crypto
-      .createHmac("sha256", apiSecret)
-      .update(signatureString)
-      .digest("hex");
-  }
 
-  /**
-   * Verifies the provided API credentials by attempting to fetch wallet balances.
-   */
+  // ── Credential Verification ─────────────────────────────────────────────────
+
   static async verifyCredentials(
     apiKey: string,
-    apiSecret: string,
+    apiSecret: string
   ): Promise<{ isValid: boolean; error?: string }> {
-    const timestamp = Math.floor(Date.now() / 1000).toString();
     const path = "/v2/wallet/balances";
-    const method = "GET";
-
-    const signature = this.generateSignature(
-      method,
-      timestamp,
-      path,
-      "",
-      "",
-      apiSecret,
-    );
-
     try {
-      const response = await axios.get(`${DELTA_BASE_URL}${path}`, {
-        headers: {
-          "api-key": apiKey,
-          signature: signature,
-          timestamp: timestamp,
-          "Content-Type": "application/json",
-          "User-Agent": "TradeDiary/1.0", // Mandatory for Delta Exchange
-        },
+      const res = await http.get(path, {
+        headers: authHeaders(apiKey, apiSecret, "GET", path),
       });
+      return { isValid: res.status === 200 };
+    } catch (err) {
+      return { isValid: false, error: extractErrorMessage(err) };
+    }
+  }
 
-      // If we get an OK response, the credentials are valid
-      return { isValid: response.status === 200 };
-    } catch (error: any) {
-      let errorMessage = "Verification failed. Please check your API Key/Secret.";
+  // ── Main Sync ───────────────────────────────────────────────────────────────
 
-      if (error.response) {
-        const status = error.response.status;
-        const data = error.response.data;
+  /**
+   * Fetches fills + active orders + order history in parallel, then
+   * FIFO-matches entry/exit fills into complete ParsedTrade objects.
+   */
+  static async syncTrades(
+    apiKey: string,
+    apiSecret: string,
+    clerkId: string
+  ): Promise<ParsedTrade[]> {
+    const startMicro = String((Date.now() - SYNC_DAYS * 86_400_000) * 1000);
+    const timeParams = { start_time: startMicro };
 
-        // Log for server-side debugging
-        console.error("❌ Delta API Error (Verification) Full Error:", JSON.stringify(error.response.data, null, 2));
+    // All three network calls start simultaneously.
+    // Total wait = slowest single call, not the sum of all three.
+    //
+    // closedOrders  → SL prices for fills whose orders have already closed/cancelled
+    // activeOrders  → bracket SL/TP for positions still open (orders still pending)
+    const [fills, closedOrders, activeOrders] = await Promise.all([
+      fetchAllPages<DeltaFill>(apiKey, apiSecret, "/v2/fills", timeParams),
+      fetchAllPages<DeltaOrder>(apiKey, apiSecret, "/v2/orders/history", timeParams)
+        .catch((): DeltaOrder[] => []),
+      fetchAllPages<DeltaOrder>(apiKey, apiSecret, "/v2/orders", { states: "open,pending" })
+        .catch((): DeltaOrder[] => []),
+    ]);
 
-        // Handle specific IP whitelist errors
-        if (status === 403 || status === 401) {
-          // Robust message extraction (handles strings and objects)
-          let deltaMsg = "";
-          if (typeof data?.message === "string") {
-            deltaMsg = data.message;
-          } else if (typeof data?.error === "string") {
-            deltaMsg = data.error;
-          } else if (data?.error?.code && typeof data.error.code === "string") {
-            deltaMsg = data.error.code;
-          }
+    // Merge: closed orders take precedence over active (come later in the array)
+    const ordersMap = new Map<number, DeltaOrder>();
+    for (const o of [...activeOrders, ...closedOrders]) ordersMap.set(o.id, o);
 
-          if (
-            deltaMsg.toLowerCase().includes("whitelist") ||
-            deltaMsg.toLowerCase().includes("ip") ||
-            deltaMsg.toLowerCase().includes("access denied")
-          ) {
-            errorMessage = `Delta Exchange Error: ${deltaMsg}. Please ensure your server IP is whitelisted in Delta API settings.`;
-          } else if (
-            deltaMsg === "invalid_api_key_or_signature" ||
-            deltaMsg === "invalid_api_key"
-          ) {
-            errorMessage = "Invalid API Key or Secret. Please double-check your credentials in Delta settings.";
-          }
+    return matchFillsToTrades(fills, ordersMap, clerkId);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIFO trade matching
+// ─────────────────────────────────────────────────────────────────────────────
+
+function matchFillsToTrades(
+  fills: DeltaFill[],
+  ordersMap: Map<number, DeltaOrder>,
+  clerkId: string
+): ParsedTrade[] {
+  const trades: ParsedTrade[] = [];
+
+  // ── 1. Pre-compute timestamps once ────────────────────────────────────────
+  // Avoids re-parsing the microsecond string in every sort comparison.
+  const tsCache = new Map<number, number>(); // fill.id → ms
+  for (const f of fills) tsCache.set(f.id, toMs(f.created_at));
+
+  // ── 2. Group by product_id (numeric, not symbol string) ───────────────────
+  const byProduct = new Map<number, DeltaFill[]>();
+  for (const f of fills) {
+    const bucket = byProduct.get(f.product_id);
+    if (bucket) bucket.push(f);
+    else byProduct.set(f.product_id, [f]);
+  }
+
+  // ── 3. Process each product independently ─────────────────────────────────
+  for (const [, productFills] of byProduct) {
+
+    // Sort oldest → newest using cached ms timestamps (no re-parsing)
+    productFills.sort((a, b) => tsCache.get(a.id)! - tsCache.get(b.id)!);
+
+    // ── Two FIFO queues — one per direction ─────────────────────────────────
+    // Use index pointers instead of Array.shift() → O(1) dequeue vs O(n).
+    const longLegs: OpenLeg[] = [];
+    const shortLegs: OpenLeg[] = [];
+    let longHead = 0;
+    let shortHead = 0;
+
+    for (const fill of productFills) {
+      const order = ordersMap.get(fill.order_id);
+      const timeMs = tsCache.get(fill.id)!;
+      const leg = buildOpenLeg(fill, order, timeMs);
+
+      if (fill.side === "buy") {
+        // BUY → closes a SHORT first, then any remainder opens a LONG
+        shortHead = consumeLegs(shortLegs, shortHead, leg, "SHORT", fill, trades, clerkId);
+        if (leg.remainingQty > 1e-9) {
+          leg.direction = "LONG";
+          longLegs.push(leg);
         }
       } else {
-        console.error("❌ Delta Verification Network Error:", error.message);
-        errorMessage = "Network error while connecting to Delta Exchange. Please try again.";
+        // SELL → closes a LONG first, then any remainder opens a SHORT
+        longHead = consumeLegs(longLegs, longHead, leg, "LONG", fill, trades, clerkId);
+        if (leg.remainingQty > 1e-9) {
+          leg.direction = "SHORT";
+          shortLegs.push(leg);
+        }
       }
-
-      return { isValid: false, error: errorMessage };
     }
   }
 
-  /**
-   * Robust parser for Delta's varied timestamp formats (ISO strings, us, ms, s).
-   * Returns a millisecond timestamp.
-   */
-  private static parseDeltaTimestamp(ts: any): number {
-    if (!ts) return Date.now();
-    const tsStr = ts.toString();
-    
-    // Check if it's an ISO 8601 string
-    if (tsStr.includes("T") || tsStr.includes("-")) {
-      const parsed = new Date(tsStr).getTime();
-      return isNaN(parsed) ? Date.now() : parsed;
-    }
+  return trades;
+}
 
-    const num = parseFloat(tsStr);
-    if (isNaN(num)) return Date.now();
+// ─────────────────────────────────────────────────────────────────────────────
+// Build an OpenLeg from a raw fill + optional order
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // Determine unit by magnitude
-    // Microseconds: ~16 digits (e.g. 1713700000000000)
-    // Milliseconds: ~13 digits (e.g. 1713700000000)
-    // Seconds: ~10 digits (e.g. 1713700000)
-    if (num > 100000000000000) return num / 1000; // Micro -> Milli
-    if (num < 10000000000) return num * 1000;    // Sec -> Milli
-    return num; // Milli
+function buildOpenLeg(
+  fill: DeltaFill,
+  order: DeltaOrder | undefined,
+  timeMs: number
+): OpenLeg {
+  const qty = safeFloat(fill.size);
+  const commission = safeFloat(fill.commission);
+
+  const commissionPerUnit = qty > 0 ? commission / qty : 0;
+
+  // Leverage: matched order → product default → 1×
+  const leverage =
+    safeFloat(String(order?.leverage ?? ""), 0) ||
+    safeFloat(fill.product?.default_leverage, 0) ||
+    1;
+
+  // SL: stop_loss_order's stop_price is most precise;
+  //     fall back to bracket_stop_loss_price for bracket orders
+  const rawSL =
+    order?.stop_order_type === "stop_loss_order"
+      ? safeFloat(order.stop_price, 0)
+      : safeFloat(order?.bracket_stop_loss_price, 0);
+  const stopLoss = rawSL > 0 ? rawSL : null;
+
+  // TP: bracket_take_profit_price
+  const rawTP = safeFloat(order?.bracket_take_profit_price, 0);
+  const target = rawTP > 0 ? rawTP : null;
+
+  // Margin: set at order creation time — most accurate source
+  const margin = safeFloat(fill.meta_data?.order_margin_blocked, 0);
+
+  return {
+    fillId: fill.id,
+    orderId: fill.order_id,
+    price: safeFloat(fill.fill_price),
+    remainingQty: qty,
+    timeMs,
+    commissionPerUnit,
+    direction: "LONG",   // overridden by caller
+    contractType: fill.product?.contract_type ?? "perpetual_futures",
+    leverage,
+    stopLoss,
+    target,
+    margin,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core match loop — O(1) dequeue via head pointer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Drains `exitLeg.remainingQty` against entries starting at `headIdx`.
+ * Returns the updated head index after consuming fully-matched entries.
+ *
+ * @param queue     - entry-side queue (longLegs or shortLegs)
+ * @param headIdx   - current front-of-queue pointer
+ * @param exitLeg   - closing fill (mutated: remainingQty decremented)
+ * @param entryDir  - direction of entries in queue
+ * @param exitFill  - raw fill object (for closed_pnl + fill id)
+ * @param trades    - output array
+ * @param clerkId   - Clerk user id
+ */
+function consumeLegs(
+  queue: OpenLeg[],
+  headIdx: number,
+  exitLeg: OpenLeg,
+  entryDir: "LONG" | "SHORT",
+  exitFill: DeltaFill,
+  trades: ParsedTrade[],
+  clerkId: string
+): number {
+  while (exitLeg.remainingQty > 1e-9 && headIdx < queue.length) {
+    const entry = queue[headIdx];
+    const matchedQty = Math.min(exitLeg.remainingQty, entry.remainingQty);
+
+    // ── Dates & times (fast IST, no Intl) ─────────────────────────────────
+    const entryDateStr = istDateStr(entry.timeMs);
+    const exitDateStr = istDateStr(exitLeg.timeMs);
+    const duration: "INTRADAY" | "SWING" =
+      entryDateStr === exitDateStr ? "INTRADAY" : "SWING";
+
+    // ── Prices ────────────────────────────────────────────────────────────
+    const entryPrice = entry.price;
+    const exitPrice = exitLeg.price;
+    const totalAmount = entryPrice * matchedQty;
+
+    // ── P&L ───────────────────────────────────────────────────────────────
+    // closed_pnl in fill metadata is the server-calculated realized P&L.
+    // It covers the full exit fill size, so scale proportionally when this
+    // match covers only part of that fill (partial close scenario).
+    const rawPnl =
+      entryDir === "LONG"
+        ? (exitPrice - entryPrice) * matchedQty
+        : (entryPrice - exitPrice) * matchedQty;
+
+    const exitFillSize = safeFloat(exitFill.size, 1);
+    const closedPnlFull = safeFloat(exitFill.meta_data?.closed_pnl ?? "", NaN);
+    const pnl = !isNaN(closedPnlFull)
+      ? closedPnlFull * (matchedQty / exitFillSize)  // proportional scaling
+      : rawPnl;
+
+    // ── Charges ───────────────────────────────────────────────────────────
+    const charges =
+      entry.commissionPerUnit * matchedQty +
+      exitLeg.commissionPerUnit * matchedQty;
+
+    const pnlPercent = totalAmount > 0 ? (pnl / totalAmount) * 100 : 0;
+
+    // ── Leverage & margin ─────────────────────────────────────────────────
+    const leverage = entry.leverage > 1 ? entry.leverage : exitLeg.leverage;
+    // Scale margin to the matched portion of this entry leg
+    const matchFraction = entry.remainingQty > 0
+      ? matchedQty / (entry.remainingQty + matchedQty - matchedQty)
+      : 1;
+    const margin =
+      entry.margin > 0
+        ? entry.margin * matchFraction
+        : leverage > 1
+          ? (entryPrice * matchedQty) / leverage
+          : entryPrice * matchedQty;
+
+    // ── SL / TP ───────────────────────────────────────────────────────────
+    const stopLoss = entry.stopLoss ?? exitLeg.stopLoss ?? null;
+    const target = entry.target ?? exitLeg.target ?? null;
+
+    // ── Outcome ───────────────────────────────────────────────────────────
+    // Use a small epsilon to treat floating-point near-zero as BREAK_EVEN
+    const outcome =
+      pnl > 0.0001 ? "PROFITABLE" : pnl < -0.0001 ? "LOSS" : "BREAK_EVEN";
+
+    trades.push({
+      clerkId,
+      symbol: exitFill.product_symbol,
+      marketType: toMarketType(entry.contractType),
+      direction: entryDir,
+      duration,
+      entryDate: entryDateStr,
+      exitDate: exitDateStr,
+      entryTime: istTimeStr(entry.timeMs),
+      exitTime: istTimeStr(exitLeg.timeMs),
+      entryPrice,
+      exitPrice,
+      quantity: matchedQty,
+      totalAmount: round8(totalAmount),
+      pnl: round8(pnl),
+      pnlPercent: round8(pnlPercent),
+      charges: round8(charges),
+      margin: round8(margin),
+      leverage,
+      stopLoss,
+      target,
+      outcome,
+      // entry fillId + exit fillId + matched qty = globally unique dedup key
+      externalOrderId: `delta-${entry.fillId}-${exitFill.id}-${matchedQty}`,
+      externalBroker: "delta",
+    });
+
+    // ── Consume matched quantities ─────────────────────────────────────────
+    exitLeg.remainingQty -= matchedQty;
+    entry.remainingQty -= matchedQty;
+
+    // Advance pointer when entry fully consumed (O(1), no array splice)
+    if (entry.remainingQty <= 1e-9) headIdx++;
   }
 
-  /**
-   * Fetches trade data from the last 7 days and pairs entries/exits using FIFO.
-   */
-  static async getFillsAndMapToTrades(apiKey: string, apiSecret: string, clerkId: string) {
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    // Delta expects start_time in microseconds (16 digits)
-    const startTimeMicro = (Date.now() - 7 * 24 * 60 * 60 * 1000) * 1000;
-    
-    const fillsPath = "/v2/fills";
-    const fillsQuery = `?start_time=${startTimeMicro}&page_size=100`;
-    const fillsSig = this.generateSignature("GET", timestamp, fillsPath, fillsQuery, "", apiSecret);
+  return headIdx;
+}
 
-    const ordersPath = "/v2/orders";
-    const ordersQuery = `?start_time=${startTimeMicro}&page_size=100`;
-    const ordersSig = this.generateSignature("GET", timestamp, ordersPath, ordersQuery, "", apiSecret);
+// ─────────────────────────────────────────────────────────────────────────────
+// Error message extractor
+// ─────────────────────────────────────────────────────────────────────────────
 
-    try {
-      const [fillsRes, ordersRes] = await Promise.all([
-        axios.get(`${DELTA_BASE_URL}${fillsPath}${fillsQuery}`, {
-          headers: { "api-key": apiKey, signature: fillsSig, timestamp, "User-Agent": "TradeDiary/1.0" },
-        }),
-        axios.get(`${DELTA_BASE_URL}${ordersPath}${ordersQuery}`, {
-          headers: { "api-key": apiKey, signature: ordersSig, timestamp, "User-Agent": "TradeDiary/1.0" },
-        })
-      ]);
+function extractErrorMessage(err: unknown): string {
+  if (!err || typeof err !== "object") return "Unknown error.";
+  const e = err as any;
+  if (!e.response) return "Network error while connecting to Delta Exchange.";
 
-      if (!fillsRes.data?.success) throw new Error("Failed to fetch fills");
-      
-      const fills = fillsRes.data.result || [];
-      const ordersMap = new Map();
-      (ordersRes.data?.result || []).forEach((o: any) => ordersMap.set(o.id, o));
+  const { status, data } = e.response;
+  const code = typeof data?.error === "string"
+    ? data.error
+    : (data?.error?.code ?? "");
+  const msg = typeof data?.message === "string" ? data.message : "";
 
-      const trades: any[] = [];
-      const symbols = [...new Set(fills.map((f: any) => f.product_symbol))];
-
-      symbols.forEach((symbol: any) => {
-        const symbolFills = fills
-          .filter((f: any) => f.product_symbol === symbol)
-          .sort((a: any, b: any) => this.parseDeltaTimestamp(a.created_at) - this.parseDeltaTimestamp(b.created_at));
-
-        const buyQueue: any[] = [];
-        const sellQueue: any[] = [];
-
-        symbolFills.forEach((fill: any) => {
-          const side = fill.side.toLowerCase();
-          if (side === "buy") {
-            this.matchFill(buyQueue, sellQueue, "LONG", fill, ordersMap, trades, clerkId);
-          } else {
-            this.matchFill(sellQueue, buyQueue, "SHORT", fill, ordersMap, trades, clerkId);
-          }
-        });
-      });
-
-      return trades;
-    } catch (error: any) {
-      console.error("❌ Delta Sync Error:", error.response?.data || error.message);
-      throw error;
-    }
+  if (status === 401 || status === 403) {
+    if (/whitelist|ip/i.test(code + msg))
+      return "IP not whitelisted. Add your server IP in Delta API settings.";
+    if (/invalid_api_key|signature/i.test(code + msg))
+      return "Invalid API Key or Secret. Check your credentials.";
   }
 
-  private static matchFill(
-    myQueue: any[],
-    opposingQueue: any[],
-    myDirection: "LONG" | "SHORT",
-    fill: any,
-    ordersMap: Map<string, any>,
-    trades: any[],
-    clerkId: string
-  ) {
-    let remainingQty = parseFloat(fill.size);
-    const fillPrice = parseFloat(fill.price);
-    const fillTime = this.parseDeltaTimestamp(fill.created_at);
-    const orderData = ordersMap.get(fill.order_id) || {};
-
-    while (remainingQty > 0 && opposingQueue.length > 0) {
-      const entry = opposingQueue[0];
-      const matchQty = Math.min(remainingQty, entry.remainingQty);
-
-      const entryDateObj = new Date(entry.time);
-      const exitDateObj = new Date(fillTime);
-      const isIntraday = entryDateObj.toDateString() === exitDateObj.toDateString();
-      
-      // CRITICAL: P&L logic must be based on the ENTRY direction
-      // If we are matching against a SHORT entry, then profit is (Entry - Exit)
-      const pnl = (entry.direction === "SHORT" 
-        ? entry.price - fillPrice 
-        : fillPrice - entry.price
-      ) * matchQty;
-
-      const totalAmount = entry.price * matchQty;
-
-      trades.push({
-        clerkId,
-        symbol: fill.product_symbol,
-        marketType: "Crypto",
-        direction: entry.direction,
-        duration: isIntraday ? "INTRADAY" : "SWING",
-        entryDate: entryDateObj.toISOString().split("T")[0],
-        exitDate: exitDateObj.toISOString().split("T")[0],
-        entryTime: entryDateObj.toISOString().split("T")[1].substring(0, 5),
-        exitTime: exitDateObj.toISOString().split("T")[1].substring(0, 5),
-        entryPrice: entry.price,
-        exitPrice: fillPrice,
-        quantity: matchQty,
-        pnl: pnl,
-        pnlPercent: totalAmount > 0 ? (pnl / totalAmount) * 100 : 0,
-        charges: entry.commissionPerUnit * matchQty + (parseFloat(fill.commission || 0) / parseFloat(fill.size)) * matchQty,
-        leverage: orderData.leverage || 1,
-        stopLoss: parseFloat(orderData.stop_price) || 0,
-        target: 0,
-        externalOrderId: `paired-${fill.id}-${entry.order_id}-${matchQty}`,
-        externalBroker: "delta",
-        outcome: pnl > 0 ? "PROFITABLE" : pnl === 0 ? "BREAK_EVEN" : "LOSS"
-      });
-
-      remainingQty -= matchQty;
-      entry.remainingQty -= matchQty;
-      if (entry.remainingQty <= 0) opposingQueue.shift();
-    }
-
-    if (remainingQty > 0) {
-      myQueue.push({
-        price: fillPrice,
-        remainingQty: remainingQty,
-        time: fillTime,
-        commissionPerUnit: parseFloat(fill.commission || 0) / parseFloat(fill.size),
-        direction: myDirection,
-        order_id: fill.order_id
-      });
-    }
-  }
+  return msg || code || `Delta API error (HTTP ${status}).`;
 }
