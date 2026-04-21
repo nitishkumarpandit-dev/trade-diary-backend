@@ -101,6 +101,32 @@ export class DeltaService {
   }
 
   /**
+   * Robust parser for Delta's varied timestamp formats (ISO strings, us, ms, s).
+   * Returns a millisecond timestamp.
+   */
+  private static parseDeltaTimestamp(ts: any): number {
+    if (!ts) return Date.now();
+    const tsStr = ts.toString();
+    
+    // Check if it's an ISO 8601 string
+    if (tsStr.includes("T") || tsStr.includes("-")) {
+      const parsed = new Date(tsStr).getTime();
+      return isNaN(parsed) ? Date.now() : parsed;
+    }
+
+    const num = parseFloat(tsStr);
+    if (isNaN(num)) return Date.now();
+
+    // Determine unit by magnitude
+    // Microseconds: ~16 digits (e.g. 1713700000000000)
+    // Milliseconds: ~13 digits (e.g. 1713700000000)
+    // Seconds: ~10 digits (e.g. 1713700000)
+    if (num > 100000000000000) return num / 1000; // Micro -> Milli
+    if (num < 10000000000) return num * 1000;    // Sec -> Milli
+    return num; // Milli
+  }
+
+  /**
    * Fetches trade data from the last 7 days and pairs entries/exits using FIFO.
    */
   static async getFillsAndMapToTrades(apiKey: string, apiSecret: string, clerkId: string) {
@@ -108,12 +134,10 @@ export class DeltaService {
     // Delta expects start_time in microseconds (16 digits)
     const startTimeMicro = (Date.now() - 7 * 24 * 60 * 60 * 1000) * 1000;
     
-    // 1. Fetch Fills (Executions)
     const fillsPath = "/v2/fills";
     const fillsQuery = `?start_time=${startTimeMicro}&page_size=100`;
     const fillsSig = this.generateSignature("GET", timestamp, fillsPath, fillsQuery, "", apiSecret);
 
-    // 2. Fetch Orders (for Metadata like SL/TP/Leverage)
     const ordersPath = "/v2/orders";
     const ordersQuery = `?start_time=${startTimeMicro}&page_size=100`;
     const ordersSig = this.generateSignature("GET", timestamp, ordersPath, ordersQuery, "", apiSecret);
@@ -134,25 +158,19 @@ export class DeltaService {
       const ordersMap = new Map();
       (ordersRes.data?.result || []).forEach((o: any) => ordersMap.set(o.id, o));
 
-      // 3. FIFO Matching Logic
       const trades: any[] = [];
       const symbols = [...new Set(fills.map((f: any) => f.product_symbol))];
 
       symbols.forEach((symbol: any) => {
         const symbolFills = fills
           .filter((f: any) => f.product_symbol === symbol)
-          .sort((a: any, b: any) => parseInt(a.created_at) - parseInt(b.created_at));
+          .sort((a: any, b: any) => this.parseDeltaTimestamp(a.created_at) - this.parseDeltaTimestamp(b.created_at));
 
         const buyQueue: any[] = [];
         const sellQueue: any[] = [];
 
         symbolFills.forEach((fill: any) => {
           const side = fill.side.toLowerCase();
-          const quantity = parseFloat(fill.size);
-          const price = parseFloat(fill.price);
-          const commission = parseFloat(fill.commission || 0);
-          const time = parseInt(fill.created_at) / 1000; // to ms
-
           if (side === "buy") {
             this.matchFill(buyQueue, sellQueue, "LONG", fill, ordersMap, trades, clerkId);
           } else {
@@ -163,7 +181,7 @@ export class DeltaService {
 
       return trades;
     } catch (error: any) {
-      console.error("❌ Delta Sync Refactor Error:", error.response?.data || error.message);
+      console.error("❌ Delta Sync Error:", error.response?.data || error.message);
       throw error;
     }
   }
@@ -171,7 +189,7 @@ export class DeltaService {
   private static matchFill(
     myQueue: any[],
     opposingQueue: any[],
-    direction: "LONG" | "SHORT",
+    myDirection: "LONG" | "SHORT",
     fill: any,
     ordersMap: Map<string, any>,
     trades: any[],
@@ -179,21 +197,22 @@ export class DeltaService {
   ) {
     let remainingQty = parseFloat(fill.size);
     const fillPrice = parseFloat(fill.price);
-    const fillTime = parseInt(fill.created_at) / 1000;
+    const fillTime = this.parseDeltaTimestamp(fill.created_at);
     const orderData = ordersMap.get(fill.order_id) || {};
 
     while (remainingQty > 0 && opposingQueue.length > 0) {
       const entry = opposingQueue[0];
       const matchQty = Math.min(remainingQty, entry.remainingQty);
 
-      // Create a paired trade record
       const entryDateObj = new Date(entry.time);
       const exitDateObj = new Date(fillTime);
-      
       const isIntraday = entryDateObj.toDateString() === exitDateObj.toDateString();
-      const pnl = (direction === "SHORT" 
-        ? entry.price - fillPrice // Short: Entry > Exit is profit
-        : fillPrice - entry.price  // Long: Exit > Entry is profit
+      
+      // CRITICAL: P&L logic must be based on the ENTRY direction
+      // If we are matching against a SHORT entry, then profit is (Entry - Exit)
+      const pnl = (entry.direction === "SHORT" 
+        ? entry.price - fillPrice 
+        : fillPrice - entry.price
       ) * matchQty;
 
       const totalAmount = entry.price * matchQty;
@@ -202,7 +221,7 @@ export class DeltaService {
         clerkId,
         symbol: fill.product_symbol,
         marketType: "Crypto",
-        direction: entry.direction, // The direction of the ENTRY
+        direction: entry.direction,
         duration: isIntraday ? "INTRADAY" : "SWING",
         entryDate: entryDateObj.toISOString().split("T")[0],
         exitDate: exitDateObj.toISOString().split("T")[0],
@@ -212,11 +231,11 @@ export class DeltaService {
         exitPrice: fillPrice,
         quantity: matchQty,
         pnl: pnl,
-        pnlPercent: (pnl / totalAmount) * 100,
+        pnlPercent: totalAmount > 0 ? (pnl / totalAmount) * 100 : 0,
         charges: entry.commissionPerUnit * matchQty + (parseFloat(fill.commission || 0) / parseFloat(fill.size)) * matchQty,
-        leverage: orderData.leverage || 1, // Reconstructed from order metadata
+        leverage: orderData.leverage || 1,
         stopLoss: parseFloat(orderData.stop_price) || 0,
-        target: 0, // Delta doesn't have an explicit 'target' field in order history usually
+        target: 0,
         externalOrderId: `paired-${fill.id}-${entry.order_id}-${matchQty}`,
         externalBroker: "delta",
         outcome: pnl > 0 ? "PROFITABLE" : pnl === 0 ? "BREAK_EVEN" : "LOSS"
@@ -233,7 +252,7 @@ export class DeltaService {
         remainingQty: remainingQty,
         time: fillTime,
         commissionPerUnit: parseFloat(fill.commission || 0) / parseFloat(fill.size),
-        direction: direction,
+        direction: myDirection,
         order_id: fill.order_id
       });
     }
