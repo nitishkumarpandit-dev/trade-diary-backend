@@ -24,8 +24,8 @@ interface DeltaFill {
   product_symbol: string;
   side: "buy" | "sell";
   size: string;       // contracts, number-as-string
-  fill_price: string;       // number-as-string
-  commission: string;       // always positive, number-as-string
+  price: string;      // execution price, number-as-string
+  commission: string; // always positive, number-as-string
   created_at: string;       // microsecond-epoch string e.g. "1713700123456789"
   meta_data?: {
     closed_pnl?: string; // realized PnL for this fill
@@ -444,7 +444,7 @@ function buildOpenLeg(
   return {
     fillId: fill.id,
     orderId: fill.order_id,
-    price: safeFloat(fill.fill_price),
+    price: safeFloat(fill.price),
     originalQty: qty,   // immutable for proportional margin scaling
     remainingQty: qty,
     timeMs,
