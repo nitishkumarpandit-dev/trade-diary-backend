@@ -19,19 +19,23 @@ const getTodayStr = (): string => {
 // ── Default seed items for new users ───────────────────────────────────────────
 
 const DEFAULT_PRE_MARKET = [
-  { title: "Check Global Indices", category: "Market Analysis", type: "pre" as const, order: 0 },
-  { title: "Review Key Levels (S/R)", category: "Technical Analysis", type: "pre" as const, order: 1 },
-  { title: "Analyze FII/DII Data", category: "Market Analysis", type: "pre" as const, order: 2 },
-  { title: "Check Economic Calendar", category: "Fundamental", type: "pre" as const, order: 3 },
-  { title: "Define Daily Bias", category: "Strategy", type: "pre" as const, order: 4 },
+  { title: "Review Global Markets & SGX Nifty", category: "Market Analysis", type: "pre" as const, order: 0 },
+  { title: "Check Economic Calendar (News Events)", category: "Fundamental", type: "pre" as const, order: 1 },
+  { title: "Identify Key Support/Resistance Levels", category: "Technical Analysis", type: "pre" as const, order: 2 },
+  { title: "Review Yesterday's Trades & Mistakes", category: "Review", type: "pre" as const, order: 3 },
+  { title: "Define Max Risk per Trade", category: "Risk Management", type: "pre" as const, order: 4 },
+  { title: "Check Strategy Setup on Watchlist", category: "Strategy", type: "pre" as const, order: 5 },
+  { title: "Emotional Check: Am I Calm?", category: "Psychology", type: "pre" as const, order: 6 },
 ];
 
 const DEFAULT_POST_MARKET = [
-  { title: "Journal All Trades", category: "Review", type: "post" as const, order: 0 },
-  { title: "Upload Trade Charts", category: "Review", type: "post" as const, order: 1 },
-  { title: "Review Rule Adherence", category: "Discipline", type: "post" as const, order: 2 },
-  { title: "Calculate Daily P&L", category: "Review", type: "post" as const, order: 3 },
-  { title: "Plan Tomorrow's Watchlist", category: "Preparation", type: "post" as const, order: 4 },
+  { title: "Log All Trades in Trade Diary", category: "Review", type: "post" as const, order: 0 },
+  { title: "Save Screenshots of Entry/Exit", category: "Review", type: "post" as const, order: 1 },
+  { title: "Evaluate Emotional State during Trading", category: "Psychology", type: "post" as const, order: 2 },
+  { title: "Review Adherence to Rules", category: "Discipline", type: "post" as const, order: 3 },
+  { title: "Analyze Mistakes (If any)", category: "Review", type: "post" as const, order: 4 },
+  { title: "Update Strategy Performance Notes", category: "Analysis", type: "post" as const, order: 5 },
+  { title: "Shutdown Terminal: No Revenge Trading", category: "Discipline", type: "post" as const, order: 6 },
 ];
 
 /** Seeds default templates if user has none. Returns all templates. */
