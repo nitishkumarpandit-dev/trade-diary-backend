@@ -8,8 +8,8 @@ export const generateTradeInsights = async (trades: any[]) => {
     throw new Error("Gemini API key is not configured.");
   }
 
-  // Use a fast model like gemini-1.5-flash for responsiveness
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  // Use a fast model like gemini-1.5-flash-latest for responsiveness
+  const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
   const tradesSummary = trades.map((t) => ({
     date: t.entryDate,
