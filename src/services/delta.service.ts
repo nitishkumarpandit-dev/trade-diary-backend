@@ -181,14 +181,14 @@ function istTimeStr(ms: number): string {
 
 function toMarketType(contractType = ""): string {
   const MAP: Record<string, string> = {
-    perpetual_futures: "Perpetual Futures",
-    futures: "Futures",
-    call_options: "Call Option",
-    put_options: "Put Option",
-    move_options: "Move Option",
-    interest_rate_swaps: "Interest Rate Swap",
+    perpetual_futures: "Crypto",
+    futures: "Crypto",
+    call_options: "Crypto",
+    put_options: "Crypto",
+    move_options: "Crypto",
+    interest_rate_swaps: "Crypto",
   };
-  return MAP[contractType] ?? (contractType || "Perpetual Futures");
+  return MAP[contractType] ?? (contractType || "Crypto");
 }
 
 function safeFloat(v: string | number | undefined | null, fallback = 0): number {

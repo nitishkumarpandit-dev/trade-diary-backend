@@ -162,7 +162,9 @@ export const getTrades = async (req: Request, res: Response) => {
         id: t._id.toString(),
         date: formattedDate,
         time: t.entryTime || "00:00",
-        market: t.marketType,
+        market: ["Perpetual Futures", "Futures", "Call Option", "Put Option", "Move Option", "Interest Rate Swap"].includes(t.marketType) 
+          ? "Crypto" 
+          : t.marketType,
         pnlPercent: pnlPercent,
         margin: margin,
         charges: t.charges || 0,
