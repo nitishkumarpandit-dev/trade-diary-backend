@@ -16,48 +16,12 @@ const getTodayStr = (): string => {
   return new Date().toISOString().split("T")[0];
 };
 
-// ── Default seed items for new users ───────────────────────────────────────────
-
-const DEFAULT_PRE_MARKET = [
-  { title: "Check Global Indices", category: "Market Analysis", type: "pre" as const, order: 0 },
-  { title: "Review Key Levels (S/R)", category: "Technical Analysis", type: "pre" as const, order: 1 },
-  { title: "Analyze FII/DII Data", category: "Market Analysis", type: "pre" as const, order: 2 },
-  { title: "Check Economic Calendar", category: "Fundamental", type: "pre" as const, order: 3 },
-  { title: "Define Daily Bias", category: "Strategy", type: "pre" as const, order: 4 },
-];
-
-const DEFAULT_POST_MARKET = [
-  { title: "Journal All Trades", category: "Review", type: "post" as const, order: 0 },
-  { title: "Upload Trade Charts", category: "Review", type: "post" as const, order: 1 },
-  { title: "Review Rule Adherence", category: "Discipline", type: "post" as const, order: 2 },
-  { title: "Calculate Daily P&L", category: "Review", type: "post" as const, order: 3 },
-  { title: "Plan Tomorrow's Watchlist", category: "Preparation", type: "post" as const, order: 4 },
-];
-
-/** Seeds default templates if user has none. Returns all templates. */
-const ensureTemplates = async (clerkId: string): Promise<IChecklistTemplate[]> => {
-  const existing = await ChecklistTemplate.find({ clerkId }).sort({ type: 1, order: 1 });
-
-  if (existing.length > 0) {
-    return existing;
-  }
-
-  // Seed defaults
-  const defaults = [...DEFAULT_PRE_MARKET, ...DEFAULT_POST_MARKET].map((item) => ({
-    ...item,
-    clerkId,
-  }));
-
-  const seeded = await ChecklistTemplate.insertMany(defaults);
-  return seeded as IChecklistTemplate[];
-};
-
 // ── GET /api/checklists/templates ──────────────────────────────────────────────
 
 export const getTemplates = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const templates = await ensureTemplates(clerkId);
+    const templates = await ChecklistTemplate.find({ clerkId }).sort({ type: 1, order: 1 });
 
     const formatted = templates.map((t) => {
       const obj = t.toObject ? t.toObject() : t;
@@ -89,20 +53,10 @@ export const getDailyChecklist = async (req: Request, res: Response) => {
       });
     }
 
-    // No saved entry — return templates with completed: false
-    const templates = await ensureTemplates(clerkId);
-
-    const items = templates.map((t) => ({
-      templateId: t._id.toString(),
-      title: t.title,
-      category: t.category,
-      type: t.type,
-      completed: false,
-    }));
-
+    // No saved entry — return empty list (frontend will show defaults)
     res.json({
       date,
-      items,
+      items: [],
       notes: "",
       isSaved: false,
     });
@@ -244,7 +198,7 @@ export const getChecklistAnalysis = async (req: Request, res: Response) => {
     // Check if user has an entry today or yesterday to continue streak
     let currentCheck = new Date(today);
     const todayStr = currentCheck.toISOString().split("T")[0];
-    
+
     // If no entry today, check if streak holds from yesterday
     if (!entryDates.has(todayStr)) {
       currentCheck.setDate(currentCheck.getDate() - 1);
@@ -264,10 +218,10 @@ export const getChecklistAnalysis = async (req: Request, res: Response) => {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
       const dStr = d.toISOString().split("T")[0];
-      
+
       const entry = dailyEntries.find((e) => e.date === dStr);
       const label = i === 0 ? "Today" : `${d.getDate()}/${d.getMonth() + 1}`;
-      
+
       trendLabels.push(label);
       if (entry) {
         const dayTotal = entry.items.length;
@@ -285,25 +239,25 @@ export const getChecklistAnalysis = async (req: Request, res: Response) => {
     dailyEntries.forEach((entry) => {
       const date = new Date(entry.date);
       const dayIndex = date.getDay(); // 0 (Sun) to 6 (Sat)
-      
+
       if (dayIndex >= 1 && dayIndex <= 5) {
         const arrIdx = dayIndex - 1;
         const dayTotal = entry.items.length;
         const dayCompleted = entry.items.filter((i) => i.completed).length;
-        
+
         weekdaySums[arrIdx] += dayTotal > 0 ? (dayCompleted / dayTotal) * 100 : 0;
         weekdayCounts[arrIdx]++;
       }
     });
 
-    const weekdayAverages = weekdaySums.map((sum, i) => 
+    const weekdayAverages = weekdaySums.map((sum, i) =>
       weekdayCounts[i] > 0 ? Math.round(sum / weekdayCounts[i]) : 0
     );
 
     // 6. Insight Message
     const bestWeekdayIdx = weekdayAverages.indexOf(Math.max(...weekdayAverages));
     const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-    const insight = streak > 5 
+    const insight = streak > 5
       ? `Impressive ${streak}-day streak! You are most disciplined on ${weekdays[bestWeekdayIdx]}.`
       : `Complete your checklist today to build your streak! Your ${weekdays[bestWeekdayIdx]} performance is leading.`;
 
