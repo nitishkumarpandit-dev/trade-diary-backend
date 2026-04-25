@@ -212,12 +212,12 @@ export const createTrade = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
 
-    const tradeData = { ...req.body, clerkId };
-    if (!tradeData.externalOrderId) {
-      delete tradeData.externalOrderId;
+    const payload = { ...req.body, clerkId };
+    if (!payload.externalOrderId) {
+      delete payload.externalOrderId;
     }
 
-    const trade = new Trade(tradeData);
+    const trade = new Trade(payload);
     await trade.save();
 
     if (trade.strategy) {
@@ -239,14 +239,17 @@ export const updateTrade = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Trade not found" });
     }
 
-    const updateData = { ...req.body };
-    if (!updateData.externalOrderId) {
-      delete updateData.externalOrderId;
+    const payload = { ...req.body };
+    const updateOps: any = { $set: payload };
+    
+    if (!payload.externalOrderId) {
+      delete payload.externalOrderId;
+      updateOps.$unset = { externalOrderId: 1 };
     }
 
     const trade = await Trade.findOneAndUpdate(
       { _id: req.params.id, clerkId },
-      updateData,
+      updateOps,
       { new: true, runValidators: true }
     );
 

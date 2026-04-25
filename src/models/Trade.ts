@@ -120,7 +120,13 @@ const TradeSchema = new Schema<ITrade>(
 // Indexes mapping to common queries
 TradeSchema.index({ clerkId: 1, marketType: 1 });
 TradeSchema.index({ clerkId: 1, createdAt: -1 });
-TradeSchema.index({ externalOrderId: 1, clerkId: 1 }, { unique: true, sparse: true });
+TradeSchema.index(
+  { externalOrderId: 1, clerkId: 1 }, 
+  { 
+    unique: true, 
+    partialFilterExpression: { externalOrderId: { $type: "string" } } 
+  }
+);
 
 export const Trade: Model<ITrade> =
   mongoose.models.Trade || mongoose.model<ITrade>("Trade", TradeSchema);
