@@ -45,7 +45,7 @@ export function createApp(): Application {
   app.get("/health", (_req: Request, res: Response) => {
     res.json({
       status: "ok",
-      service: "trade-diary-backend",
+      service: "tradenote-backend",
       timestamp: new Date().toISOString(),
     });
   });

@@ -1,7 +1,7 @@
 {
-  "name": "trade-diary-backend",
+  "name": "tradenote-backend",
   "version": "1.0.0",
-  "description": "Trade Diary backend — Express + MongoDB + Clerk webhooks",
+  "description": "Trade Note backend — Express + MongoDB + Clerk webhooks",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

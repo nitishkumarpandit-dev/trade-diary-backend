@@ -51,10 +51,10 @@ export const generateTradeInsights = async (trades: any[]) => {
   try {
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
-    
+
     // Clean up potential markdown formatting (e.g. \`\`\`json ... \`\`\`)
     const cleanedText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-    
+
     return JSON.parse(cleanedText);
   } catch (error) {
     console.error("Gemini AI generation failed:", error);

@@ -14,7 +14,7 @@ async function bootstrap() {
   const app = createApp();
 
   app.listen(PORT, () => {
-    console.log(`\n🚀 Trade Diary API running on http://localhost:${PORT}`);
+    console.log(`\n🚀 Trade Note API running on http://localhost:${PORT}`);
     console.log(`📋 Health check: http://localhost:${PORT}/health`);
     console.log(
       `🪝  Webhook endpoint: http://localhost:${PORT}/api/webhooks/clerk`,
