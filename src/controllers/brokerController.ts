@@ -8,15 +8,7 @@ import { encrypt, decrypt } from "../utils/encryption.utils";
 // Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Extracts the Clerk user ID from the request auth context.
- * Throws a typed error so every handler can catch it uniformly.
- */
-function requireClerkId(req: any): string {
-  const userId: string | undefined = req.auth?.userId;
-  if (!userId) throw Object.assign(new Error("Unauthorized"), { status: 401 });
-  return userId;
-}
+import { getUserId, handleApiError } from "../utils/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // connectDelta
@@ -34,7 +26,7 @@ function requireClerkId(req: any): string {
  */
 export const connectDelta = async (req: Request, res: Response): Promise<void> => {
   try {
-    const clerkId = requireClerkId(req);
+    const clerkId = getUserId(req);
     const apiKey = (req.body.apiKey ?? "").trim();
     const apiSecret = (req.body.apiSecret ?? "").trim();
 
@@ -83,7 +75,7 @@ export const connectDelta = async (req: Request, res: Response): Promise<void> =
     });
   } catch (err: any) {
     console.error("❌ connectDelta error:", err);
-    res.status(err.status ?? 500).json({ error: err.message ?? "Failed to connect broker." });
+    handleApiError(err, res);
   }
 };
 
@@ -94,7 +86,7 @@ export const connectDelta = async (req: Request, res: Response): Promise<void> =
 
 export const getBrokerStatus = async (req: Request, res: Response): Promise<void> => {
   try {
-    const clerkId = requireClerkId(req);
+    const clerkId = getUserId(req);
     const user = await User.findOne({ clerkId }).select("brokerConnection").lean();
 
     if (!user?.brokerConnection?.isConnected) {
@@ -113,7 +105,7 @@ export const getBrokerStatus = async (req: Request, res: Response): Promise<void
     });
   } catch (err: any) {
     console.error("❌ getBrokerStatus error:", err);
-    res.status(err.status ?? 500).json({ error: err.message });
+    handleApiError(err, res);
   }
 };
 
@@ -124,7 +116,7 @@ export const getBrokerStatus = async (req: Request, res: Response): Promise<void
 
 export const disconnectBroker = async (req: Request, res: Response): Promise<void> => {
   try {
-    const clerkId = requireClerkId(req);
+    const clerkId = getUserId(req);
 
     await User.findOneAndUpdate(
       { clerkId },
@@ -139,7 +131,7 @@ export const disconnectBroker = async (req: Request, res: Response): Promise<voi
     res.json({ success: true, message: "Broker disconnected successfully." });
   } catch (err: any) {
     console.error("❌ disconnectBroker error:", err);
-    res.status(err.status ?? 500).json({ error: err.message });
+    handleApiError(err, res);
   }
 };
 
@@ -169,7 +161,7 @@ export const disconnectBroker = async (req: Request, res: Response): Promise<voi
 
 export const syncTrades = async (req: Request, res: Response): Promise<void> => {
   try {
-    const clerkId = requireClerkId(req);
+    const clerkId = getUserId(req);
 
     // ── 1. Load user & validate connection ──────────────────────────────────
     const user = await User.findOne({ clerkId }).select("brokerConnection").lean();
@@ -260,8 +252,6 @@ export const syncTrades = async (req: Request, res: Response): Promise<void> => 
     });
   } catch (err: any) {
     console.error("❌ syncTrades error:", err.response?.data ?? err.message ?? err);
-    res.status(err.status ?? 500).json({
-      error: err.message ?? "Failed to synchronize trades.",
-    });
+    handleApiError(err, res);
   }
 };

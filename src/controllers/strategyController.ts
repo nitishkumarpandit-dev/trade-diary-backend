@@ -1,13 +1,7 @@
 import { Request, Response } from "express";
 import { Strategy } from "../models/Strategy";
 
-// Helper to safely get clerk user ID
-const getUserId = (req: any): string => {
-  if (!req.auth || !req.auth.userId) {
-    throw new Error("Unauthorized");
-  }
-  return req.auth.userId;
-};
+import { getUserId, handleApiError } from "../utils/auth";
 
 // GET /api/strategies
 export const getStrategies = async (req: Request, res: Response) => {
@@ -21,7 +15,8 @@ export const getStrategies = async (req: Request, res: Response) => {
     const strategies = await Strategy.find({ clerkId })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     const totalCount = await Strategy.countDocuments({ clerkId });
 
@@ -40,7 +35,7 @@ export const getStrategies = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -48,13 +43,13 @@ export const getStrategies = async (req: Request, res: Response) => {
 export const getStrategy = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const strategy = await Strategy.findOne({ _id: req.params.id, clerkId });
+    const strategy = await Strategy.findOne({ _id: req.params.id, clerkId }).lean();
     if (!strategy) {
       return res.status(404).json({ error: "Strategy not found" });
     }
     res.json(strategy);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -66,7 +61,7 @@ export const createStrategy = async (req: Request, res: Response) => {
     await strategy.save();
     res.status(201).json(strategy);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -84,7 +79,7 @@ export const updateStrategy = async (req: Request, res: Response) => {
     }
     res.json(strategy);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -98,6 +93,6 @@ export const deleteStrategy = async (req: Request, res: Response) => {
     }
     res.json({ message: "Strategy deleted successfully" });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };

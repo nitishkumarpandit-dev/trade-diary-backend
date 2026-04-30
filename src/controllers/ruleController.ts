@@ -2,12 +2,7 @@ import { Request, Response } from "express";
 import { Rule } from "../models/Rule";
 import { Trade } from "../models/Trade";
 
-const getUserId = (req: any): string => {
-  if (!req.auth || !req.auth.userId) {
-    throw new Error("Unauthorized");
-  }
-  return req.auth.userId;
-};
+import { getUserId, handleApiError } from "../utils/auth";
 
 export const getRuleAnalytics = async (req: Request, res: Response) => {
   try {
@@ -78,7 +73,7 @@ export const getRuleAnalytics = async (req: Request, res: Response) => {
     const ruleCountsAgg = result.ruleCounts;
     const disciplineByDay = result.disciplineByDay;
 
-    const rules = await Rule.find({ clerkId });
+    const rules = await Rule.find({ clerkId }).lean();
 
     const ruleCounts: Record<string, number> = {};
     ruleCountsAgg.forEach((r: any) => ruleCounts[r._id.toString()] = r.adherenceCount);
@@ -112,7 +107,7 @@ export const getRuleAnalytics = async (req: Request, res: Response) => {
     });
 
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -127,7 +122,8 @@ export const getRules = async (req: Request, res: Response) => {
     const rules = await Rule.find({ clerkId })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     const totalCount = await Rule.countDocuments({ clerkId });
 
@@ -145,7 +141,7 @@ export const getRules = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -153,13 +149,13 @@ export const getRules = async (req: Request, res: Response) => {
 export const getRule = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const rule = await Rule.findOne({ _id: req.params.id, clerkId });
+    const rule = await Rule.findOne({ _id: req.params.id, clerkId }).lean();
     if (!rule) {
       return res.status(404).json({ error: "Rule not found" });
     }
     res.json(rule);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -171,7 +167,7 @@ export const createRule = async (req: Request, res: Response) => {
     await rule.save();
     res.status(201).json(rule);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -189,7 +185,7 @@ export const updateRule = async (req: Request, res: Response) => {
     }
     res.json(rule);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -203,6 +199,6 @@ export const deleteRule = async (req: Request, res: Response) => {
     }
     res.json({ message: "Rule deleted successfully" });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };

@@ -3,6 +3,7 @@
 import express, { Application, Request, Response } from "express";
 import cors from "cors";
 import { clerkMiddleware } from "@clerk/express";
+import rateLimit from "express-rate-limit";
 
 import { clerkWebhookHandler } from "./webhooks/clerk.webhook";
 
@@ -12,9 +13,13 @@ export function createApp(): Application {
   const app = express();
 
   // ── CORS ────────────────────────────────────────────────────────────────────
+  const allowedOrigins = process.env.ALLOWED_ORIGINS 
+    ? process.env.ALLOWED_ORIGINS.split(",") 
+    : (process.env.NODE_ENV === "production" ? [] : "*");
+
   app.use(
     cors({
-      origin: process.env.ALLOWED_ORIGINS?.split(",") ?? "*",
+      origin: allowedOrigins,
       methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization"],
     }),
@@ -39,7 +44,13 @@ export function createApp(): Application {
   }));
 
   // ── API Routes ───────────────────────────────────────────────────────────────
-  app.use("/api", apiRoutes);
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 200, // Limit each IP to 200 requests per windowMs
+    message: { error: "Too many requests from this IP, please try again later." }
+  });
+
+  app.use("/api", apiLimiter, apiRoutes);
 
   // ── Health check ─────────────────────────────────────────────────────────────
   app.get("/health", (_req: Request, res: Response) => {

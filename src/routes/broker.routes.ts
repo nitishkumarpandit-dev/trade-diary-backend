@@ -1,7 +1,10 @@
 import { Router } from "express";
+import { requireAuth } from "@clerk/express";
 import * as brokerController from "../controllers/brokerController";
 
 const router = Router();
+
+router.use(requireAuth());
 
 // POST /api/broker/connect/delta
 router.post("/connect/delta", brokerController.connectDelta);

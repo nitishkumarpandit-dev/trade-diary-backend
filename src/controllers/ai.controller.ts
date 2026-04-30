@@ -2,12 +2,7 @@ import { Request, Response } from "express";
 import { Trade } from "../models/Trade";
 import { generateTradeInsights } from "../services/gemini.service";
 
-const getUserId = (req: any): string => {
-  if (!req.auth || !req.auth.userId) {
-    throw new Error("Unauthorized");
-  }
-  return req.auth.userId;
-};
+import { getUserId, handleApiError } from "../utils/auth";
 
 export const getInsights = async (req: Request, res: Response) => {
   try {
@@ -51,7 +46,6 @@ export const getInsights = async (req: Request, res: Response) => {
 
     res.json(insights);
   } catch (error: any) {
-    console.error("Error generating insights:", error);
-    res.status(500).json({ error: error.message || "Failed to generate insights" });
+    handleApiError(error, res);
   }
 };

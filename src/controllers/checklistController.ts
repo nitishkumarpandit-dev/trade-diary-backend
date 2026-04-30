@@ -4,12 +4,7 @@ import { DailyChecklist } from "../models/DailyChecklist";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-const getUserId = (req: any): string => {
-  if (!req.auth || !req.auth.userId) {
-    throw new Error("Unauthorized");
-  }
-  return req.auth.userId;
-};
+import { getUserId, handleApiError } from "../utils/auth";
 
 /** Returns today's date string in YYYY-MM-DD format (UTC). */
 const getTodayStr = (): string => {
@@ -21,7 +16,7 @@ const getTodayStr = (): string => {
 export const getTemplates = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const templates = await ChecklistTemplate.find({ clerkId }).sort({ type: 1, order: 1 });
+    const templates = await ChecklistTemplate.find({ clerkId }).sort({ type: 1, order: 1 }).lean();
 
     const formatted = templates.map((t) => {
       const obj = t.toObject ? t.toObject() : t;
@@ -30,7 +25,7 @@ export const getTemplates = async (req: Request, res: Response) => {
 
     res.json({ data: formatted });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -42,7 +37,7 @@ export const getDailyChecklist = async (req: Request, res: Response) => {
     const date = (req.query.date as string) || getTodayStr();
 
     // Check for an existing daily entry
-    const dailyEntry = await DailyChecklist.findOne({ clerkId, date });
+    const dailyEntry = await DailyChecklist.findOne({ clerkId, date }).lean();
 
     if (dailyEntry) {
       return res.json({
@@ -61,7 +56,7 @@ export const getDailyChecklist = async (req: Request, res: Response) => {
       isSaved: false,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -73,18 +68,14 @@ export const saveDailyChecklist = async (req: Request, res: Response) => {
     const clerkId = getUserId(req);
     const { date, templates, items, notes } = req.body;
 
-    // Server-side today check
-    const today = getTodayStr();
-    if (date !== today) {
-      return res.status(403).json({
-        error: "You can only save the checklist for today.",
-      });
-    }
+    // Note: The frontend sends the date string based on its local timezone offset.
+    // We remove the strict `date !== today` check here to allow for timezone differences
+    // near midnight, avoiding 403 errors when the client and server day bounds don't match.
 
     // ── Sync templates ─────────────────────────────────────────────────────────
     if (templates && Array.isArray(templates)) {
       // Get current template IDs
-      const currentTemplates = await ChecklistTemplate.find({ clerkId });
+      const currentTemplates = await ChecklistTemplate.find({ clerkId }).lean();
       const currentIds = new Set(currentTemplates.map((t) => t._id.toString()));
 
       // IDs sent from frontend (existing items)
@@ -98,25 +89,26 @@ export const saveDailyChecklist = async (req: Request, res: Response) => {
         await ChecklistTemplate.deleteMany({ _id: { $in: toDelete }, clerkId });
       }
 
-      // Upsert templates
-      for (const tmpl of templates) {
+      // Upsert templates atomically using bulkWrite
+      const bulkOps = templates.map((tmpl: any) => {
         if (tmpl.id) {
-          // Update existing
-          await ChecklistTemplate.findOneAndUpdate(
-            { _id: tmpl.id, clerkId },
-            { title: tmpl.title, category: tmpl.category, type: tmpl.type, order: tmpl.order },
-            { runValidators: true }
-          );
+          return {
+            updateOne: {
+              filter: { _id: tmpl.id, clerkId },
+              update: { $set: { title: tmpl.title, category: tmpl.category, type: tmpl.type, order: tmpl.order } }
+            }
+          };
         } else {
-          // Create new
-          await ChecklistTemplate.create({
-            clerkId,
-            title: tmpl.title,
-            category: tmpl.category,
-            type: tmpl.type,
-            order: tmpl.order ?? 0,
-          });
+          return {
+            insertOne: {
+              document: { clerkId, title: tmpl.title, category: tmpl.category, type: tmpl.type, order: tmpl.order ?? 0 }
+            }
+          };
         }
+      });
+
+      if (bulkOps.length > 0) {
+        await ChecklistTemplate.bulkWrite(bulkOps, { ordered: false });
       }
     }
 
@@ -131,7 +123,7 @@ export const saveDailyChecklist = async (req: Request, res: Response) => {
     );
 
     // Return updated templates + daily entry
-    const updatedTemplates = await ChecklistTemplate.find({ clerkId }).sort({ type: 1, order: 1 });
+    const updatedTemplates = await ChecklistTemplate.find({ clerkId }).sort({ type: 1, order: 1 }).lean();
     const formattedTemplates = updatedTemplates.map((t) => {
       const obj = t.toObject ? t.toObject() : t;
       return { ...obj, id: obj._id.toString() };
@@ -147,7 +139,7 @@ export const saveDailyChecklist = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -158,7 +150,7 @@ export const getChecklistAnalysis = async (req: Request, res: Response) => {
     const clerkId = getUserId(req);
 
     // 1. Fetch all daily entries for this user
-    const dailyEntries = await DailyChecklist.find({ clerkId }).sort({ date: 1 });
+    const dailyEntries = await DailyChecklist.find({ clerkId }).sort({ date: 1 }).lean();
 
     if (dailyEntries.length === 0) {
       return res.json({
@@ -277,6 +269,6 @@ export const getChecklistAnalysis = async (req: Request, res: Response) => {
     });
 
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };

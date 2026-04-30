@@ -120,6 +120,8 @@ const TradeSchema = new Schema<ITrade>(
 // Indexes mapping to common queries
 TradeSchema.index({ clerkId: 1, marketType: 1 });
 TradeSchema.index({ clerkId: 1, createdAt: -1 });
+TradeSchema.index({ clerkId: 1, strategy: 1, createdAt: -1 });
+TradeSchema.index({ clerkId: 1, outcome: 1 });
 TradeSchema.index(
   { externalOrderId: 1, clerkId: 1 }, 
   { 

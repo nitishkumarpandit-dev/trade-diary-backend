@@ -2,12 +2,7 @@ import { Request, Response } from "express";
 import { Mistake } from "../models/Mistake";
 import { Trade } from "../models/Trade";
 
-const getUserId = (req: any): string => {
-  if (!req.auth || !req.auth.userId) {
-    throw new Error("Unauthorized");
-  }
-  return req.auth.userId;
-};
+import { getUserId, handleApiError } from "../utils/auth";
 
 function deriveSeverity(name: string): "HIGH" | "MEDIUM" | "LOW" {
   const lower = name.toLowerCase();
@@ -101,7 +96,7 @@ export const getMistakeAnalytics = async (req: Request, res: Response) => {
        }
     }
     
-    const mistakes = await Mistake.find({ clerkId });
+    const mistakes = await Mistake.find({ clerkId }).lean();
     const mistakeCounts: Record<string, number> = {};
     mistakeCountsAgg.forEach((m: any) => mistakeCounts[m._id.toString()] = m.occurrences);
     
@@ -141,7 +136,7 @@ export const getMistakeAnalytics = async (req: Request, res: Response) => {
     });
 
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -156,7 +151,8 @@ export const getMistakes = async (req: Request, res: Response) => {
     const mistakes = await Mistake.find({ clerkId })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     const totalCount = await Mistake.countDocuments({ clerkId });
 
@@ -174,7 +170,7 @@ export const getMistakes = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -182,13 +178,13 @@ export const getMistakes = async (req: Request, res: Response) => {
 export const getMistake = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
-    const mistake = await Mistake.findOne({ _id: req.params.id, clerkId });
+    const mistake = await Mistake.findOne({ _id: req.params.id, clerkId }).lean();
     if (!mistake) {
       return res.status(404).json({ error: "Mistake not found" });
     }
     res.json(mistake);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -205,7 +201,7 @@ export const createMistake = async (req: Request, res: Response) => {
     await mistake.save();
     res.status(201).json(mistake);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -228,7 +224,7 @@ export const updateMistake = async (req: Request, res: Response) => {
     }
     res.json(mistake);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -242,6 +238,6 @@ export const deleteMistake = async (req: Request, res: Response) => {
     }
     res.json({ message: "Mistake deleted successfully" });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };

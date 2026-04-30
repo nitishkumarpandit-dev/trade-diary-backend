@@ -2,13 +2,11 @@ import { Request, Response } from "express";
 import { Trade } from "../models/Trade";
 import { Strategy } from "../models/Strategy";
 
+import { getUserId, handleApiError } from "../utils/auth";
+
 export const getReportData = async (req: Request, res: Response): Promise<void> => {
   try {
-    const clerkId = (req as any).auth?.userId;
-    if (!clerkId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+    const clerkId = getUserId(req);
 
     const { marketType, duration } = req.query;
 
@@ -280,8 +278,8 @@ export const getReportData = async (req: Request, res: Response): Promise<void> 
     };
 
     res.status(200).json(response);
-  } catch (error) {
+  } catch (error: any) {
     console.error("❌ Error fetching report data:", error);
-    res.status(500).json({ error: "Internal server error" });
+    handleApiError(error, res);
   }
 };

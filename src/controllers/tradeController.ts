@@ -3,69 +3,9 @@ import mongoose from "mongoose";
 import { Trade } from "../models/Trade";
 import { Strategy } from "../models/Strategy";
 
-const getUserId = (req: any): string => {
-  if (!req.auth || !req.auth.userId) {
-    throw new Error("Unauthorized");
-  }
-  return req.auth.userId;
-};
+import { getUserId, handleApiError } from "../utils/auth";
 
-const syncStrategyStats = async (clerkId: string, strategyId: any) => {
-  if (!strategyId) return;
-  try {
-    const stats = await Trade.aggregate([
-      { $match: { clerkId, strategy: new mongoose.Types.ObjectId(strategyId.toString()) } },
-      {
-        $group: {
-          _id: "$strategy",
-          tradesExecuted: { $sum: 1 },
-          netPnl: { $sum: "$pnl" },
-          wins: {
-            $sum: { $cond: [{ $eq: ["$outcome", "PROFITABLE"] }, 1, 0] }
-          },
-          grossProfit: {
-            $sum: { $cond: [{ $gt: ["$pnl", 0] }, "$pnl", 0] }
-          },
-          grossLoss: {
-            $sum: { $cond: [{ $lt: ["$pnl", 0] }, { $abs: "$pnl" }, 0] }
-          }
-        }
-      },
-      {
-        $project: {
-          tradesExecuted: 1,
-          netPnl: 1,
-          winRate: {
-            $cond: [
-              { $gt: ["$tradesExecuted", 0] },
-              { $multiply: [{ $divide: ["$wins", "$tradesExecuted"] }, 100] },
-              0
-            ]
-          },
-          profitFactor: {
-            $cond: [
-              { $eq: ["$grossLoss", 0] },
-              { $cond: [{ $gt: ["$grossProfit", 0] }, 100, 0] },
-              { $divide: ["$grossProfit", "$grossLoss"] }
-            ]
-          }
-        }
-      }
-    ]);
-
-    let updateData = { tradesExecuted: 0, netPnl: 0, winRate: 0, profitFactor: 0 };
-    if (stats.length > 0) {
-      updateData = stats[0];
-    }
-
-    await Strategy.findOneAndUpdate(
-      { _id: strategyId, clerkId },
-      { $set: updateData }
-    );
-  } catch (err) {
-    console.error("Failed to sync strategy stats:", err);
-  }
-};
+import { TradeService } from "../services/trade.service";
 
 // GET /api/trades
 export const getTrades = async (req: Request, res: Response) => {
@@ -105,7 +45,7 @@ export const getTrades = async (req: Request, res: Response) => {
       if (strat) {
         filter.strategy = strat._id;
       } else {
-        filter.strategy = new mongoose.Types.ObjectId();
+        return res.status(400).json({ error: "Invalid strategy filter." });
       }
     }
 
@@ -123,56 +63,13 @@ export const getTrades = async (req: Request, res: Response) => {
     const rawTrades = await Trade.find(filter)
       .populate("strategy", "name")
       .populate("rules", "name category")
-      .populate("mistakes", "name severity impact")
       .sort(sortObj)
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     // Bind UI-focused business logic computations to the server boundary
-    const formattedTrades = rawTrades.map(trade => {
-      const t = trade.toObject ? trade.toObject() : trade;
-
-      // Prioritize stored metrics from broker sync, fallback to manual entry behavior
-      const entryPrice = Number(t.entryPrice) || 0;
-      const quantity = Number(t.quantity) || 0;
-      
-      const margin = (t.margin != null && t.margin !== 0) 
-        ? t.margin 
-        : (entryPrice * quantity);
-
-      // Preferred: actual broker-calculated ROI. Fallback: manual estimate.
-      const pnlPercent = (t.pnlPercent != null && t.pnlPercent !== 0)
-        ? t.pnlPercent
-        : (margin > 0 ? (t.pnl / margin) * 100 : 0);
-
-      let mappedOutcome = "BREAK EVEN";
-      if (t.outcome === "PROFITABLE") mappedOutcome = "FULL SUCCESS";
-      if (t.outcome === "LOSS") mappedOutcome = "MISTAKE";
-
-      let formattedDate = t.entryDate;
-      if (t.entryDate) {
-        const dt = new Date(t.entryDate);
-        if (!isNaN(dt.getTime())) {
-          formattedDate = dt.toLocaleDateString("en-GB", { day: 'numeric', month: 'short', year: 'numeric' }).toUpperCase();
-        }
-      }
-
-      return {
-        ...t,
-        id: t._id.toString(),
-        date: formattedDate,
-        time: t.entryTime || "00:00",
-        market: ["Perpetual Futures", "Futures", "Call Option", "Put Option", "Move Option", "Interest Rate Swap"].includes(t.marketType) 
-          ? "Crypto" 
-          : t.marketType,
-        pnlPercent: pnlPercent,
-        margin: margin,
-        charges: t.charges || 0,
-        strategy: (t.strategy as any)?.name || "None",
-        outcome: mappedOutcome,
-        rrRatio: t.rrRatio || "1:1"
-      };
-    });
+    const formattedTrades = rawTrades.map(TradeService.formatTrade);
 
     const totalCount = await Trade.countDocuments(filter);
 
@@ -185,7 +82,7 @@ export const getTrades = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -196,14 +93,15 @@ export const getTrade = async (req: Request, res: Response) => {
     const trade = await Trade.findOne({ _id: req.params.id, clerkId })
       .populate("strategy")
       .populate("rules")
-      .populate("mistakes");
+      .populate("mistakes")
+      .lean();
 
     if (!trade) {
       return res.status(404).json({ error: "Trade not found" });
     }
     res.json(trade);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -212,21 +110,63 @@ export const createTrade = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
 
-    const payload = { ...req.body, clerkId };
-    if (!payload.externalOrderId) {
-      delete payload.externalOrderId;
-    }
+    const {
+      symbol,
+      direction,
+      entryDate,
+      exitDate,
+      entryPrice,
+      exitPrice,
+      size,
+      fees,
+      pnl,
+      netPnl,
+      notes,
+      strategy,
+      rules,
+      mistakes,
+      marketType,
+      outcome,
+      duration,
+      roi,
+      conviction,
+      tags
+    } = req.body;
+
+    const payload = {
+      clerkId,
+      symbol,
+      direction,
+      entryDate,
+      exitDate,
+      entryPrice,
+      exitPrice,
+      size,
+      fees,
+      pnl,
+      netPnl,
+      notes,
+      strategy,
+      rules,
+      mistakes,
+      marketType,
+      outcome,
+      duration,
+      roi,
+      conviction,
+      tags
+    };
 
     const trade = new Trade(payload);
     await trade.save();
 
     if (trade.strategy) {
-      await syncStrategyStats(clerkId, trade.strategy);
+      await TradeService.syncStrategyStats(clerkId, trade.strategy);
     }
 
     res.status(201).json(trade);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -239,13 +179,60 @@ export const updateTrade = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Trade not found" });
     }
 
-    const payload = { ...req.body };
+    const {
+      symbol,
+      direction,
+      entryDate,
+      exitDate,
+      entryPrice,
+      exitPrice,
+      size,
+      fees,
+      pnl,
+      netPnl,
+      notes,
+      strategy,
+      rules,
+      mistakes,
+      marketType,
+      outcome,
+      duration,
+      roi,
+      conviction,
+      tags
+    } = req.body;
+
+    const payload = {
+      symbol,
+      direction,
+      entryDate,
+      exitDate,
+      entryPrice,
+      exitPrice,
+      size,
+      fees,
+      pnl,
+      netPnl,
+      notes,
+      strategy,
+      rules,
+      mistakes,
+      marketType,
+      outcome,
+      duration,
+      roi,
+      conviction,
+      tags
+    };
+
+    // Remove undefined fields so they aren't incorrectly unset by $set
+    Object.keys(payload).forEach(key => {
+      if ((payload as any)[key] === undefined) {
+        delete (payload as any)[key];
+      }
+    });
+
     const updateOps: any = { $set: payload };
-    
-    if (!payload.externalOrderId) {
-      delete payload.externalOrderId;
-      updateOps.$unset = { externalOrderId: 1 };
-    }
 
     const trade = await Trade.findOneAndUpdate(
       { _id: req.params.id, clerkId },
@@ -254,15 +241,15 @@ export const updateTrade = async (req: Request, res: Response) => {
     );
 
     if (oldTrade.strategy && trade?.strategy && oldTrade.strategy.toString() !== trade.strategy.toString()) {
-      await syncStrategyStats(clerkId, oldTrade.strategy);
-      await syncStrategyStats(clerkId, trade.strategy);
+      await TradeService.syncStrategyStats(clerkId, oldTrade.strategy);
+      await TradeService.syncStrategyStats(clerkId, trade.strategy);
     } else if (trade?.strategy) {
-      await syncStrategyStats(clerkId, trade.strategy);
+      await TradeService.syncStrategyStats(clerkId, trade.strategy);
     }
 
     res.json(trade);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
 
@@ -276,11 +263,11 @@ export const deleteTrade = async (req: Request, res: Response) => {
     }
 
     if (trade.strategy) {
-      await syncStrategyStats(clerkId, trade.strategy);
+      await TradeService.syncStrategyStats(clerkId, trade.strategy);
     }
 
     res.json({ message: "Trade deleted successfully" });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleApiError(error, res);
   }
 };
