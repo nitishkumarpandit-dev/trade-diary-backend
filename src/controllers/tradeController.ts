@@ -110,52 +110,12 @@ export const createTrade = async (req: Request, res: Response) => {
   try {
     const clerkId = getUserId(req);
 
-    const {
-      symbol,
-      direction,
-      entryDate,
-      exitDate,
-      entryPrice,
-      exitPrice,
-      size,
-      fees,
-      pnl,
-      netPnl,
-      notes,
-      strategy,
-      rules,
-      mistakes,
-      marketType,
-      outcome,
-      duration,
-      roi,
-      conviction,
-      tags
-    } = req.body;
-
     const payload = {
-      clerkId,
-      symbol,
-      direction,
-      entryDate,
-      exitDate,
-      entryPrice,
-      exitPrice,
-      size,
-      fees,
-      pnl,
-      netPnl,
-      notes,
-      strategy,
-      rules,
-      mistakes,
-      marketType,
-      outcome,
-      duration,
-      roi,
-      conviction,
-      tags
+      ...req.body,
+      clerkId
     };
+    delete payload._id;
+    delete payload.id;
 
     const trade = new Trade(payload);
     await trade.save();
@@ -179,51 +139,12 @@ export const updateTrade = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Trade not found" });
     }
 
-    const {
-      symbol,
-      direction,
-      entryDate,
-      exitDate,
-      entryPrice,
-      exitPrice,
-      size,
-      fees,
-      pnl,
-      netPnl,
-      notes,
-      strategy,
-      rules,
-      mistakes,
-      marketType,
-      outcome,
-      duration,
-      roi,
-      conviction,
-      tags
-    } = req.body;
-
-    const payload = {
-      symbol,
-      direction,
-      entryDate,
-      exitDate,
-      entryPrice,
-      exitPrice,
-      size,
-      fees,
-      pnl,
-      netPnl,
-      notes,
-      strategy,
-      rules,
-      mistakes,
-      marketType,
-      outcome,
-      duration,
-      roi,
-      conviction,
-      tags
-    };
+    const payload = { ...req.body };
+    delete payload._id;
+    delete payload.id;
+    delete payload.clerkId;
+    delete payload.createdAt;
+    delete payload.updatedAt;
 
     // Remove undefined fields so they aren't incorrectly unset by $set
     Object.keys(payload).forEach(key => {
